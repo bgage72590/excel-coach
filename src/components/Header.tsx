@@ -1,4 +1,4 @@
-import { Button, Menu, MenuItem, MenuList, MenuPopover, MenuTrigger, Text, makeStyles, tokens } from '@fluentui/react-components';
+import { Button, Menu, MenuItem, MenuList, MenuPopover, MenuTrigger, Text, makeStyles, mergeClasses, tokens } from '@fluentui/react-components';
 import { ArrowReset20Regular, MoreHorizontal20Regular } from '@fluentui/react-icons';
 import { useState } from 'react';
 import { emptyProgress } from '../engine/progress';
@@ -16,6 +16,9 @@ const useStyles = makeStyles({
     borderBottom: `1px solid ${tokens.colorNeutralStroke2}`,
     flexShrink: 0,
   },
+  // Excel for Mac draws its own add-in menu button (an "i") over the pane's top-right corner,
+  // which would cover the More options button. Keep clear of it.
+  macHeader: { paddingRight: '44px' },
   brand: {
     display: 'flex',
     alignItems: 'center',
@@ -32,11 +35,11 @@ const useStyles = makeStyles({
 
 export function Header() {
   const s = useStyles();
-  const { goHome, setProgress } = useCoach();
+  const { goHome, setProgress, platform } = useCoach();
   const [confirmReset, setConfirmReset] = useState(false);
 
   return (
-    <header className={s.header}>
+    <header className={mergeClasses(s.header, platform === 'mac' && s.macHeader)}>
       <button className={s.brand} onClick={goHome} aria-label="Excel Coach home">
         <Logo />
         <Text weight="semibold" size={300}>
@@ -58,7 +61,7 @@ export function Header() {
       <ConfirmDialog
         open={confirmReset}
         title="Reset your progress?"
-        body="This clears mastery, personal bests and review dates for every skill. Practice sheets in your workbook stay where they are."
+        body="This clears mastery, best times and review dates for every skill, mission and drill records, and practice time. Practice sheets in your workbook stay where they are."
         confirmLabel="Reset progress"
         onCancel={() => setConfirmReset(false)}
         onConfirm={() => {
