@@ -2,7 +2,9 @@
 
 `npm run dev` serves the panel from your Mac at `https://localhost:3000`, so only that Mac can load it. A Windows PC, or Excel on the web, needs the panel at an HTTPS address it can reach. GitHub Pages hosts it for free.
 
-Everything here is prepared, and nothing is published yet. There's no GitHub repository, and the workflow does nothing until one exists. Follow these steps when you're ready.
+**Published.** The panel is live at https://bgage72590.github.io/excel-coach/taskpane.html, and the Windows manifest is at https://bgage72590.github.io/excel-coach/manifest.xml. Skip to [3. Install on Windows](#3-install-on-windows).
+
+**Updating it:** commit your changes, then run `npm run publish:pages`. It commits this project minus the research and planning notes to a local `public` branch under your GitHub no-reply address, and pushes it to github.com/bgage72590/excel-coach, whose workflow tests, builds and deploys the site in about two minutes. Your own history and email never leave the Mac. Steps 1 and 2 below describe the one-time setup that's already done.
 
 ## What you get
 
