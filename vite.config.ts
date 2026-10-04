@@ -37,5 +37,6 @@ export default defineConfig({
       input: { taskpane: 'taskpane.html', commands: 'commands.html' },
     },
   },
-  test: { environment: 'node', include: ['tests/**/*.test.ts'] },
+  // The data tests sweep hundreds of seeds; CI runners are slower than a Mac, so allow a minute.
+  test: { environment: 'node', include: ['tests/**/*.test.ts'], testTimeout: 60_000 },
 });
