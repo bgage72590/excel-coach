@@ -75,6 +75,16 @@ The push starts the workflow before Pages is turned on, so that first run fails 
 
 Every install uses the hosted manifest. On the Windows PC, open `https://<user>.github.io/excel-coach/manifest.xml` in the browser and save it with Ctrl+S as `manifest.xml`. Don't use the `manifest.xml` in the project folder: that one loads the panel from your Mac.
 
+### Excel for Windows: one PowerShell command (quickest)
+
+This registers the hosted manifest as a developer add-in, the same way Microsoft's own sideloading tools do. Close Excel, open PowerShell (not as administrator), and run:
+
+```powershell
+$dir = "$env:USERPROFILE\ExcelCoach"; New-Item -ItemType Directory -Force $dir | Out-Null; Invoke-WebRequest "https://bgage72590.github.io/excel-coach/manifest.xml" -OutFile "$dir\manifest.xml"; $key = "HKCU:\Software\Microsoft\Office\16.0\WEF\Developer"; New-Item -Path $key -Force | Out-Null; New-ItemProperty -Path $key -Name "$dir\manifest.xml" -Value "$dir\manifest.xml" -PropertyType String -Force | Out-Null
+```
+
+Open Excel, then **Home › Add-ins**: **Excel Coach (web)** is listed under developer add-ins. To remove it, delete that value from the same registry key (or run `Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Office\16.0\WEF\Developer" -Name "$env:USERPROFILE\ExcelCoach\manifest.xml"`). A work PC whose IT blocks custom add-ins won't show it; use one of the methods below or ask IT.
+
 ### Excel on the web
 
 1. Go to microsoft365.com, open Excel, and open a workbook.
