@@ -444,7 +444,8 @@ describe('VBA answers', () => {
     const order = ['ActiveWindow.FreezePanes = False', 'ActiveWindow.SplitColumn = 0', 'ActiveWindow.SplitRow = 1', 'ActiveWindow.FreezePanes = True'].map((s) => vba.indexOf(s));
     expect(order.every((i) => i >= 0)).toBe(true);
     expect(order).toEqual([...order].sort((a, b) => a - b));
-    expect(vba).toMatch(/If Not ActiveSheet\.AutoFilterMode Then\s+Range\("A1"\)\.CurrentRegion\.AutoFilter/);
+    // Excel for Mac raises error 1004 on AutoFilter with no arguments (seen in Excel 16.113).
+    expect(vba).toMatch(/If Not ActiveSheet\.AutoFilterMode Then\s+Range\("A1"\)\.CurrentRegion\.AutoFilter Field:=1/);
     expect(vba).toContain('.Columns.AutoFit');
     expect(vba.indexOf('.Columns.AutoFit')).toBeGreaterThan(vba.indexOf('NumberFormat'));
   });
@@ -469,7 +470,7 @@ describe('VBA answers', () => {
   it('the any-rows answer still formats the report, so it can replace FormatWeekly whole', () => {
     const anyRows = macroAnyRows.solution(macroAnyRows.make(new Rng(1)));
     const format = macroRecordFormat.solution(macroRecordFormat.make(new Rng(1)));
-    for (const line of ['Columns("A").NumberFormat', 'Columns("F:G").NumberFormat', 'ActiveWindow.SplitRow = 1', 'Range("A1").CurrentRegion.AutoFilter', '.Columns.AutoFit']) {
+    for (const line of ['Columns("A").NumberFormat', 'Columns("F:G").NumberFormat', 'ActiveWindow.SplitRow = 1', 'Range("A1").CurrentRegion.AutoFilter Field:=1', '.Columns.AutoFit']) {
       expect(format).toContain(line);
       expect(anyRows).toContain(line);
     }
