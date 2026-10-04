@@ -1,0 +1,63 @@
+# Publishes the panel to GitHub Pages, so Excel on Windows and Excel on the web can load it.
+# Inert until the repository exists and Settings › Pages › Source is set to GitHub Actions.
+# HOSTING.md has the steps.
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Nothing by default. Each job asks for only what it needs.
+permissions: {}
+
+# One publish at a time. A newer run waits for the current one rather than cancelling it midway.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: read # configure-pages looks up the site's address
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+      - run: npm test
+
+      - id: pages
+        uses: actions/configure-pages@v6
+
+      # Typechecks, builds the site under the repository's path, and writes dist/manifest.xml.
+      - name: Build for Pages
+        run: npm run build:pages
+        env:
+          # https://<owner>.github.io/<repo>, or the custom domain if one is set. No trailing slash.
+          PAGES_URL: ${{ steps.pages.outputs.base_url }}/
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write # proves to Pages that the deployment comes from this workflow
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

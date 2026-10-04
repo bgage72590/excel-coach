@@ -1,0 +1,38 @@
+{
+  "name": "excel-coach",
+  "private": true,
+  "version": "0.1.0",
+  "description": "A personal Excel add-in for practicing advanced skills with live checking.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:http": "COACH_HTTP=1 vite",
+    "build": "tsc --noEmit -p . && vite build",
+    "build:pages": "tsc --noEmit -p . && node scripts/build-pages.mjs",
+    "typecheck": "tsc --noEmit -p .",
+    "test": "vitest run",
+    "certs": "office-addin-dev-certs install",
+    "sideload": "node scripts/sideload.mjs",
+    "unsideload": "node scripts/sideload.mjs --remove",
+    "validate": "office-addin-manifest validate manifest.xml",
+    "validate:pages": "office-addin-manifest validate dist/manifest.xml",
+    "publish:pages": "scripts/publish-public.sh"
+  },
+  "dependencies": {
+    "@fluentui/react-components": "^9.74.9",
+    "@fluentui/react-icons": "^2.0.343",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "@types/office-js": "^1.0.611",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "office-addin-dev-certs": "^3.0.1",
+    "office-addin-manifest": "^3.0.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.2",
+    "vitest": "^5.0.3"
+  }
+}
