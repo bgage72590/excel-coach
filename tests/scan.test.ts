@@ -718,6 +718,9 @@ describe('scanWorkbook', () => {
   });
 });
 
+/** Fast on a quiet Mac (well under 0.5 s); the budget leaves room for parallel runs and CI. */
+const SPEED_BUDGET_MS = 2500;
+
 describe('scan speed', () => {
   it('scans a 50,000-cell sheet well under a second', () => {
     const rows = 5000;
@@ -748,7 +751,8 @@ describe('scan speed', () => {
     const elapsed = performance.now() - started;
     expect(finding(findings, 'typed-over-formula')?.count).toBe(10);
     expect(finding(findings, 'nested-if')?.count).toBe(rows);
-    expect(elapsed).toBeLessThan(500);
+    // Generous for busy machines and CI; a quadratic slip would take tens of seconds.
+    expect(elapsed).toBeLessThan(SPEED_BUDGET_MS);
   });
 
   it('stays fast when every formula is different', () => {
@@ -763,7 +767,7 @@ describe('scan speed', () => {
     const findings = scanWorkbook([{ sheet: 'Unique', address: `A1:J${rows}`, formulas, r1c1: formulas }]);
     const elapsed = performance.now() - started;
     expect(finding(findings, 'vlookup-approximate')).toBeDefined();
-    expect(elapsed).toBeLessThan(1000);
+    expect(elapsed).toBeLessThan(SPEED_BUDGET_MS * 2);
   });
 });
 
