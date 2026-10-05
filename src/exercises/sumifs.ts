@@ -2,6 +2,7 @@ import { CATEGORIES, ITEMS, PRODUCTS, REGIONS, REPS, VENDORS, WAREHOUSES, eomont
 import { round, type Rng } from '../engine/rng';
 import type { ColumnSpec } from '../engine/types';
 import { FMT, cells, column, dataBlock, defineExercise, rangeWrite, tableWrite } from './common';
+import { TABLE_TYPING_TIP, cellList, checkStep, fillStep, money, monthName, part, raw, rowsWhere, typeStep } from './guides';
 
 // ---------- Inventory value by warehouse ----------
 
@@ -57,6 +58,52 @@ export const sumifsWarehouse = defineExercise<InvData>({
     'Match against H2, not a typed warehouse name, then fill the formula down to I5.',
   ],
   solution: () => '=SUMIFS(Inventory[Value],Inventory[Warehouse],H2)',
+  guide: (d) => {
+    const first = d.order[0];
+    const rows = rowsWhere(d.rows, (r) => r.warehouse === first);
+    const total = sum(d.rows.filter((r) => r.warehouse === first).map((r) => r.value));
+    return [
+      {
+        do: 'Meet the data. The blue block in columns `A` to `F` is a Table named **Inventory**.',
+        why: 'A Table has a name, and so does each of its columns. In a formula, `Inventory[Value]` means the whole Value column, and it grows when rows are added. Tap the buttons to see each column.',
+        show: [
+          { label: 'Value column', at: 'Inventory[Value]', note: 'That’s `Inventory[Value]` (column `F`): the numbers you’ll add up.' },
+          { label: 'Warehouse column', at: 'Inventory[Warehouse]', note: 'That’s `Inventory[Warehouse]` (column `C`): SUMIFS reads it on every row to decide whether to add that row.' },
+        ],
+      },
+      {
+        do: `See what \`I2\` should add up: every ${first} row’s Value.`,
+        why: `This is what you’d get by filtering Warehouse to ${first} and reading the status bar. SUMIFS does the same thing in one formula, and it stays up to date.`,
+        show: [
+          {
+            label: `Select the ${first} values`,
+            at: cellList('F', rows),
+            note: `Look at **Sum** in the status bar at the bottom of the Excel window: ${money(total)}. That’s the number your formula in \`I2\` will show.`,
+          },
+        ],
+      },
+      typeStep({
+        cell: 'I2',
+        formula: [
+          part('=SUMIFS(', 'Adds up only the rows that match the condition.'),
+          part('Inventory[Value]', 'What to add up: the Value column.', 'Inventory[Value]'),
+          raw(', '),
+          part('Inventory[Warehouse]', 'Where to look: the Warehouse column.', 'Inventory[Warehouse]'),
+          raw(', '),
+          part('H2', `What to look for: the warehouse named in \`H2\` (${first}). Point at the cell instead of typing the name, so the same formula works on every row.`, 'H2'),
+          raw(')'),
+        ],
+        why: TABLE_TYPING_TIP,
+      }),
+      fillStep({
+        from: 'I2',
+        range: 'I2:I5',
+        direction: 'down',
+        why: 'Fill Down copies `I2`’s formula into the cells below. Excel moves `H2` along to `H3`, `H4` and `H5`, so each row totals its own warehouse. The Table columns stay put.',
+      }),
+      checkStep(),
+    ];
+  },
   make: (rng) => ({ rows: Array.from({ length: 48 }, () => stockLine(rng)), order: rng.shuffle(WAREHOUSES) }),
   layout: (d) => ({
     blocks: [
@@ -151,6 +198,64 @@ export const sumifsGrid = defineExercise<GridData>({
     'Join an operator and a cell with &: ">="&G$1. Press {absKey} while the cursor is on a reference to add the $. To fill right, select the row and press {fillRight} (Home › Fill › Right) rather than dragging the fill handle, which slides Table column names along.',
   ],
   solution: () => '=SUMIFS(Spend[Amount],Spend[Vendor],$F2,Spend[Date],">="&G$1,Spend[Date],"<="&EOMONTH(G$1,0))',
+  guide: (d) => {
+    const vendor = d.vendors[0];
+    const month = d.months[0];
+    const keep = (r: SpendLine) => r.vendor === vendor && r.date >= month && r.date <= eomonth(month);
+    const total = sum(d.rows.filter(keep).map((r) => r.amount));
+    return [
+      {
+        do: 'Meet the layout. Vendors run down column `F`, months run across row `1`, and the Table on the left is named **Spend**.',
+        why: 'Each month header is really a date: the first day of that month, shown as “Jan 2026”. Every cell in the grid is one vendor in one month.',
+        show: [
+          { label: 'Vendors', at: 'F2:F7', note: 'Each row of the grid is one of these vendors.' },
+          { label: 'Months', at: 'G1:J1', note: 'Each column of the grid is one of these months.' },
+          { label: 'Amount column', at: 'Spend[Amount]', note: '`Spend[Amount]`: the numbers you’ll add up.' },
+        ],
+      },
+      {
+        do: `See what \`G2\` should add up: ${vendor}’s amounts dated in ${monthName(month)}.`,
+        show: d.rows.some(keep)
+          ? [
+              {
+                label: `Select ${vendor} in ${monthName(month)}`,
+                at: cellList('D', rowsWhere(d.rows, keep)),
+                note: `The status bar’s **Sum** is ${money(total)}. That’s the number for \`G2\`.`,
+              },
+            ]
+          : undefined,
+        why: 'That takes three conditions: the vendor matches, the date is on or after the 1st of the month, and the date is on or before the month’s last day.',
+      },
+      typeStep({
+        cell: 'G2',
+        formula: [
+          part('=SUMIFS(', 'Adds up the rows that match every condition.'),
+          part('Spend[Amount]', 'What to add up.', 'Spend[Amount]'),
+          raw(', '),
+          part('Spend[Vendor]', 'Condition 1 looks in the Vendor column…', 'Spend[Vendor]'),
+          raw(', '),
+          part('$F2', '…for the vendor in column `F`. The `$` before F keeps it in column F when you fill right.', 'F2'),
+          raw(', '),
+          part('Spend[Date]', 'Condition 2 looks in the Date column…', 'Spend[Date]'),
+          raw(', '),
+          part('">="&G$1', '…for dates on or after the month in row `1`. `&` joins the text ">=" to the date. The `$` before 1 keeps it in row 1 when you fill down.', 'G1'),
+          raw(', '),
+          part('Spend[Date]', 'Condition 3 looks in the Date column again…', 'Spend[Date]'),
+          raw(', '),
+          part('"<="&EOMONTH(G$1,0)', '…for dates on or before the last day of that month. `EOMONTH(G$1,0)` is the month’s last day.'),
+          raw(')'),
+        ],
+        why: 'Adding the `$`: type it, or click inside a reference while typing and press {absKey} until it reads `$F2` or `G$1`.',
+      }),
+      fillStep({
+        from: 'G2',
+        range: 'G2:J7',
+        direction: 'both',
+        why: 'The `$` signs do the work here: every cell keeps reading its vendor from column `F` and its month from row `1`. Use the Fill commands rather than dragging the corner handle across, which would slide the Table column names along with it.',
+      }),
+      checkStep(),
+    ];
+  },
   make: (rng) => ({ rows: Array.from({ length: 90 }, () => spendLine(rng, VENDORS)), vendors: rng.shuffle(VENDORS), months: MONTHS }),
   layout: (d) => ({
     blocks: [
@@ -255,6 +360,57 @@ export const sumifsMonth = defineExercise<MonthData>({
     'The end of the month is EOMONTH($I$1,0). Lock I1 with $ so it doesn’t move when you fill down.',
   ],
   solution: () => '=SUMIFS(Sales[Revenue],Sales[Rep],H4,Sales[Date],">="&$I$1,Sales[Date],"<="&EOMONTH($I$1,0))',
+  guide: (d) => {
+    const rep = SORTED_REPS[0];
+    const keep = (r: SaleLine) => r.rep === rep && r.date >= d.month && r.date <= eomonth(d.month);
+    const total = sum(d.rows.filter(keep).map((r) => r.revenue));
+    return [
+      {
+        do: 'Meet the layout. `I1` holds the month, the reps run down `H4:H11`, and the Table on the left is named **Sales**.',
+        why: `\`I1\` is really a date: the first day of ${monthName(d.month)}. Your formulas will read it, so changing \`I1\` updates every total.`,
+        show: [
+          { label: 'The month', at: 'I1' },
+          { label: 'Revenue column', at: 'Sales[Revenue]', note: '`Sales[Revenue]`: the numbers you’ll add up.' },
+          { label: 'Date column', at: 'Sales[Date]', note: '`Sales[Date]`: tested twice, once for the start of the month and once for the end.' },
+        ],
+      },
+      {
+        do: `See what \`I4\` should add up: ${rep}’s revenue dated in ${monthName(d.month)}.`,
+        show: d.rows.some(keep)
+          ? [
+              {
+                label: `Select ${rep} in ${monthName(d.month)}`,
+                at: cellList('F', rowsWhere(d.rows, keep)),
+                note: `The status bar’s **Sum** is ${money(total)}. That’s the number for \`I4\`.`,
+              },
+            ]
+          : undefined,
+      },
+      typeStep({
+        cell: 'I4',
+        formula: [
+          part('=SUMIFS(', 'Adds up the rows that match every condition.'),
+          part('Sales[Revenue]', 'What to add up.', 'Sales[Revenue]'),
+          raw(', '),
+          part('Sales[Rep]', 'Condition 1 looks in the Rep column…', 'Sales[Rep]'),
+          raw(', '),
+          part('H4', '…for the rep named in `H4`. No `$`, so it moves to `H5`, `H6`… as you fill down.', 'H4'),
+          raw(', '),
+          part('Sales[Date]', 'Condition 2 looks in the Date column…', 'Sales[Date]'),
+          raw(', '),
+          part('">="&$I$1', '…for dates on or after the first of the month in `I1`. `$I$1` is locked both ways, so every row reads `I1`.', 'I1'),
+          raw(', '),
+          part('Sales[Date]', 'Condition 3 looks in the Date column again…', 'Sales[Date]'),
+          raw(', '),
+          part('"<="&EOMONTH($I$1,0)', '…for dates on or before the month’s last day. `EOMONTH($I$1,0)` works it out from `I1`.'),
+          raw(')'),
+        ],
+        why: 'Adding the `$`: click inside `I1` while typing and press {absKey} until it reads `$I$1`.',
+      }),
+      fillStep({ from: 'I4', range: 'I4:I11', direction: 'down', why: '`H4` moves down to each rep in turn; `$I$1` stays on the month.' }),
+      checkStep(),
+    ];
+  },
   make: (rng) => ({ rows: Array.from({ length: 120 }, () => saleLine(rng)), month: rng.pick(SALE_MONTHS.slice(1, 5)) }),
   layout: (d) => ({
     blocks: [

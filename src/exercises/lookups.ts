@@ -1,7 +1,8 @@
 import { CARRIERS, GL_ACCOUNTS, ITEMS, VENDORS } from '../engine/data';
 import { round, type Rng } from '../engine/rng';
-import type { ColumnSpec, Grid } from '../engine/types';
+import type { ColumnSpec, Grid, SheetPointer } from '../engine/types';
 import { FMT, cells, dataBlock, defineExercise, rangeWrite, tableWrite } from './common';
+import { TABLE_TYPING_TIP, cellList, checkStep, fillStep, money, part, raw, rowsWhere, typeStep } from './guides';
 
 // ---------- shared item master ----------
 
@@ -78,6 +79,51 @@ export const xlookupLeadTime = defineExercise<LeadData>({
     '=XLOOKUP(I2, Items[SKU], Items[Lead days]), then fill down.',
   ],
   solution: () => '=XLOOKUP(I2,Items[SKU],Items[Lead days])',
+  guide: (d) => {
+    const po = d.pos[0];
+    const at = d.items.findIndex((i) => i.sku === po.sku);
+    const row = at + 2;
+    const days = d.items[at]?.leadDays;
+    return [
+      {
+        do: 'Meet the data. The blue block in columns `A` to `E` is a Table named **Items**, with one row per SKU. The purchase order lines sit in `H:J`, and the lead times go in `K2:K21`.',
+        why: 'A Table has a name, and so does each of its columns. In a formula, `Items[SKU]` means the Table’s whole SKU column. Tap the buttons to see each part.',
+        show: [
+          { label: 'SKUs to look up', at: 'I2:I21', note: 'Each PO line names a SKU in column `I`. You’ll find each one in the Items Table.' },
+          { label: 'SKU column', at: 'Items[SKU]', note: 'That’s `Items[SKU]` (column `A`): where XLOOKUP searches for each SKU.' },
+          { label: 'Lead days column', at: 'Items[Lead days]', note: 'That’s `Items[Lead days]` (column `D`): the numbers to bring back.' },
+        ],
+      },
+      {
+        do: `See what \`K2\` should show. \`I2\` holds ${po.sku}, so find that SKU in the Items Table and read its Lead days.`,
+        why: 'This is the lookup you’d do by eye: scan down the SKU column, stop at the match, read across. XLOOKUP does the same for every PO line.',
+        show:
+          at >= 0
+            ? [{ label: `Find ${po.sku}`, at: `A${row}:E${row}`, note: `${po.sku} is on row ${row}. Its lead time is ${days} days, so \`K2\` should show ${days}.` }]
+            : undefined,
+      },
+      typeStep({
+        cell: 'K2',
+        formula: [
+          part('=XLOOKUP(', 'Finds a value in one column and returns the value on the same row from another column.'),
+          part('I2', `What to find: the SKU in \`I2\` (${po.sku}). Point at the cell instead of typing the SKU, so each row looks up its own.`, 'I2'),
+          raw(', '),
+          part('Items[SKU]', 'Where to look for it: the SKU column of the Items Table.', 'Items[SKU]'),
+          raw(', '),
+          part('Items[Lead days]', 'What to bring back: the Lead days on the row where the SKU matched.', 'Items[Lead days]'),
+          raw(')'),
+        ],
+        why: `${TABLE_TYPING_TIP} XLOOKUP matches exactly unless you tell it otherwise, so there’s no FALSE to add at the end the way VLOOKUP needs for an exact match.`,
+      }),
+      fillStep({
+        from: 'K2',
+        range: 'K2:K21',
+        direction: 'down',
+        why: 'Fill Down copies `K2`’s formula into the cells below. Excel moves `I2` along to `I3`, `I4` and on down, so each PO line looks up its own SKU. The Table columns stay put.',
+      }),
+      checkStep('The coach re-sorts the Items Table, changes lead times and swaps the PO lines behind the scenes, then puts everything back. XLOOKUP finds each SKU wherever its row ends up.'),
+    ];
+  },
   make: (rng) => {
     const items = itemMaster(rng, 24);
     return { items, pos: poLines(rng, items.map((i) => i.sku), 20) };
@@ -147,6 +193,69 @@ export const xlookupNotFound = defineExercise<NotFoundData>({
     '=XLOOKUP(I2, Items[SKU], Items[Unit cost], "Discontinued")',
   ],
   solution: () => '=XLOOKUP(I2,Items[SKU],Items[Unit cost],"Discontinued")',
+  guide: (d) => {
+    const itemOf = (sku: string) => d.items.find((i) => i.sku === sku);
+    const foundAt = d.pos.findIndex((p) => itemOf(p.sku));
+    const missingAt = d.pos.findIndex((p) => !itemOf(p.sku));
+    const first = itemOf(d.pos[0].sku);
+    const firstShows = first ? money(first.cost) : 'Discontinued';
+    const pointers: SheetPointer[] = [];
+    if (foundAt >= 0) {
+      const sku = d.pos[foundAt].sku;
+      const item = itemOf(sku)!;
+      const itemRow = d.items.indexOf(item) + 2;
+      pointers.push({
+        label: 'A SKU that’s there',
+        at: `A${itemRow}:E${itemRow}`,
+        note: `\`I${foundAt + 2}\` holds ${sku}, which is on row ${itemRow} of the Items Table. Its Unit cost is ${money(item.cost)}, so \`K${foundAt + 2}\` should show ${money(item.cost)}.`,
+      });
+    }
+    if (missingAt >= 0) {
+      pointers.push({
+        label: 'A discontinued SKU',
+        at: `I${missingAt + 2}`,
+        note: `${d.pos[missingAt].sku} isn’t anywhere in \`Items[SKU]\`. A plain XLOOKUP would show \`#N/A\` in \`K${missingAt + 2}\`; yours will show Discontinued.`,
+      });
+    }
+    return [
+      {
+        do: 'Meet the data. The blue block in columns `A` to `E` is a Table named **Items**. The PO lines sit in `H:J`, and the unit costs go in `K2:K21`.',
+        why: 'Four of the PO lines name a SKU that was discontinued, so it isn’t in the Items Table at all. A plain lookup shows the error `#N/A` (“not available”) for those; you’ll show the word Discontinued instead.',
+        show: [
+          { label: 'SKUs to look up', at: 'I2:I21', note: 'Each PO line names a SKU in column `I`.' },
+          { label: 'SKU column', at: 'Items[SKU]', note: 'That’s `Items[SKU]` (column `A`): where XLOOKUP searches.' },
+          { label: 'Unit cost column', at: 'Items[Unit cost]', note: 'That’s `Items[Unit cost]` (column `E`): the values to bring back.' },
+        ],
+      },
+      {
+        do: 'See the two kinds of answer. Most SKUs are in the Items Table, but a few aren’t.',
+        why: `\`I2\` holds ${d.pos[0].sku}, so \`K2\` should show ${firstShows}.`,
+        show: pointers.length ? pointers : undefined,
+      },
+      typeStep({
+        cell: 'K2',
+        formula: [
+          part('=XLOOKUP(', 'Finds a value in one column and returns the value on the same row from another column.'),
+          part('I2', `What to find: the SKU in \`I2\` (${d.pos[0].sku}).`, 'I2'),
+          raw(', '),
+          part('Items[SKU]', 'Where to look for it: the SKU column of the Items Table.', 'Items[SKU]'),
+          raw(', '),
+          part('Items[Unit cost]', 'What to bring back: the Unit cost on the row where the SKU matched.', 'Items[Unit cost]'),
+          raw(', '),
+          part('"Discontinued"', 'What to show when the SKU isn’t found anywhere. The pieces between the commas are called arguments, and this optional fourth one is named if_not_found. Text goes inside double quotes; spell it with a capital D.'),
+          raw(')'),
+        ],
+        why: 'Why not wrap it in IFERROR? if_not_found only steps in when nothing matches. If the formula itself has a mistake, the error still shows instead of being hidden.',
+      }),
+      fillStep({
+        from: 'K2',
+        range: 'K2:K21',
+        direction: 'down',
+        why: '`I2` moves down a row at a time, so each PO line looks up its own SKU. The four discontinued ones show Discontinued instead of `#N/A`.',
+      }),
+      checkStep('Behind the scenes the coach re-sorts the Items Table, changes costs and discontinues different SKUs, then puts it all back. Your fourth argument catches whichever SKUs go missing.'),
+    ];
+  },
   make: (rng) => {
     const items = itemMaster(rng, 24);
     return { items, ...poWithGaps(rng, items) };
@@ -238,6 +347,77 @@ export const xlookupTwoKeys = defineExercise<TwoKeyData>({
     '=XLOOKUP(1, (Rates[Carrier]=H2)*(Rates[Zone]=I2), Rates[Rate per kg])',
   ],
   solution: () => '=XLOOKUP(1,(Rates[Carrier]=H2)*(Rates[Zone]=I2),Rates[Rate per kg])',
+  guide: (d) => {
+    const ship = d.ships[0];
+    const keep = (r: RateRow) => r.carrier === ship.carrier && r.zone === ship.zone;
+    const carrierRows = rowsWhere(d.rates, (r) => r.carrier === ship.carrier);
+    const zoneRows = rowsWhere(d.rates, (r) => r.zone === ship.zone);
+    const row = rowsWhere(d.rates, keep)[0];
+    const rate = d.rates.find(keep)?.rate;
+    return [
+      {
+        do: 'Meet the data. The blue block in columns `A` to `C` is a Table named **Rates**: one rate per kg for every carrier and zone. The shipments sit in `G:J`, and the rates go in `K2:K21`.',
+        why: 'Each carrier appears five times, once per zone, and each zone appears once per carrier. So neither column alone pins down one row: the lookup has to match both.',
+        show: [
+          { label: 'Carrier column', at: 'Rates[Carrier]', note: 'That’s `Rates[Carrier]` (column `A`). Each carrier shows up on several rows.' },
+          { label: 'Zone column', at: 'Rates[Zone]', note: 'That’s `Rates[Zone]` (column `B`). Each zone shows up on several rows too.' },
+          { label: 'Rate column', at: 'Rates[Rate per kg]', note: 'That’s `Rates[Rate per kg]` (column `C`): the values to bring back.' },
+        ],
+      },
+      {
+        do: `See what \`K2\` should show: the rate for ${ship.carrier} (in \`H2\`) in zone ${ship.zone} (in \`I2\`).`,
+        show: [
+          { label: `${ship.carrier} rows`, at: cellList('A', carrierRows), note: `${ship.carrier} has ${carrierRows.length} rows, one per zone. The carrier alone can’t pick one.` },
+          { label: `Zone ${ship.zone} rows`, at: cellList('B', zoneRows), note: `Zone ${ship.zone} has ${zoneRows.length} rows, one per carrier. The zone alone can’t pick one either.` },
+          ...(row && rate !== undefined
+            ? [{ label: 'Both match', at: `A${row}:C${row}`, note: `Row ${row} is the only row where both match. Its rate is ${money(rate)}, so \`K2\` should show ${money(rate)}.` }]
+            : []),
+        ],
+      },
+      {
+        do: 'Peek at the trick before you use it. Click `E2`, an empty cell, and type this test, then press {enter}.',
+        formula: [
+          raw('=('),
+          part('Rates[Carrier]=H2', `Test 1 asks every Rates row: is your Carrier ${ship.carrier}, the one in \`H2\`? Each row answers TRUE or FALSE.`, 'Rates[Carrier]'),
+          raw(')'),
+          part('*', 'Multiplies the two tests row by row. Excel counts TRUE as 1 and FALSE as 0, so a row gets 1 only when both tests are TRUE.'),
+          raw('('),
+          part('Rates[Zone]=I2', `Test 2 asks every Rates row: is your Zone ${ship.zone}, the one in \`I2\`?`, 'Rates[Zone]'),
+          raw(')'),
+        ],
+        why: `The answers spill down \`E2:E21\`: one formula fills the cells below by itself, one result per Rates row, each beside the row it tested. Every row shows 0 except row ${row ?? 'with the match'}, which shows 1.`,
+        show: row ? [{ label: 'Find the 1', at: `E${row}`, note: `Row ${row}: ${ship.carrier}, zone ${ship.zone}. That 1 is what XLOOKUP will look for.` }] : undefined,
+      },
+      {
+        do: 'Click `E2` and press Delete.',
+        why: 'That removes the peek and its whole spill. The real formula goes in `K2`.',
+      },
+      typeStep({
+        cell: 'K2',
+        formula: [
+          part('=XLOOKUP(', 'Finds a value in one list and returns the value on the same row from another column.'),
+          part('1', 'What to find: a 1, which marks the row where both tests are TRUE.'),
+          raw(', ('),
+          part('Rates[Carrier]=H2', `Where to look, test 1: does each row’s Carrier match \`H2\` (${ship.carrier})?`, 'Rates[Carrier]'),
+          raw(')'),
+          part('*', 'Multiplies the tests: 1 where both match, 0 everywhere else. That’s the column of 0s and 1s you saw in the peek.'),
+          raw('('),
+          part('Rates[Zone]=I2', `Where to look, test 2: does each row’s Zone match \`I2\` (zone ${ship.zone})?`, 'Rates[Zone]'),
+          raw('), '),
+          part('Rates[Rate per kg]', 'What to bring back: the rate on the row holding the 1.', 'Rates[Rate per kg]'),
+          raw(')'),
+        ],
+        why: `Check the brackets: each test sits in its own pair. ${TABLE_TYPING_TIP}`,
+      }),
+      fillStep({
+        from: 'K2',
+        range: 'K2:K21',
+        direction: 'down',
+        why: '`H2` and `I2` move down a row at a time, so each shipment matches its own carrier and zone. The Rates columns stay put.',
+      }),
+      checkStep('The coach re-sorts the Rates Table and changes the rates behind the scenes, then puts them back. The 1 follows the matching row wherever it lands.'),
+    ];
+  },
   make: (rng) => ({ rates: rateTable(rng), ships: ships(rng) }),
   layout: (d) => ({
     blocks: [
@@ -313,6 +493,47 @@ export const lookupLeft = defineExercise<LeftData>({
     '=XLOOKUP(F2, Accounts[Account no], Accounts[Account name])',
   ],
   solution: () => '=XLOOKUP(F2,Accounts[Account no],Accounts[Account name])',
+  guide: (d) => {
+    const no = d.entries[0].account;
+    const at = d.accounts.findIndex((a) => a.no === no);
+    const row = at + 2;
+    const name = d.accounts[at]?.name;
+    return [
+      {
+        do: 'Meet the data. The blue block in columns `A` to `C` is a Table named **Accounts**. The journal entries sit in `E:G`, and the account names go in `H2:H16`.',
+        why: 'The number you search for is in column `C`, but the name you want is in column `A`, to its left. VLOOKUP can only bring back columns to the right of the one it searches. XLOOKUP takes the search column and the return column separately, so either side works.',
+        show: [
+          { label: 'Numbers to look up', at: 'F2:F16', note: 'Each journal entry has only an account number, in column `F`.' },
+          { label: 'Account no column', at: 'Accounts[Account no]', note: 'That’s `Accounts[Account no]` (column `C`): where XLOOKUP searches.' },
+          { label: 'Account name column', at: 'Accounts[Account name]', note: 'That’s `Accounts[Account name]` (column `A`): the names to bring back, to the left of the numbers.' },
+        ],
+      },
+      {
+        do: `See what \`H2\` should show. \`F2\` holds account ${no}, so find it in the Account no column and read the name to its left.`,
+        show: at >= 0 ? [{ label: `Find account ${no}`, at: `A${row}:C${row}`, note: `Account ${no} is on row ${row}. Its name is ${name}, so \`H2\` should show ${name}.` }] : undefined,
+      },
+      typeStep({
+        cell: 'H2',
+        formula: [
+          part('=XLOOKUP(', 'Finds a value in one column and returns the value on the same row from another column, on either side.'),
+          part('F2', `What to find: the account number in \`F2\` (${no}).`, 'F2'),
+          raw(', '),
+          part('Accounts[Account no]', 'Where to look for it: the Account no column (`C`).', 'Accounts[Account no]'),
+          raw(', '),
+          part('Accounts[Account name]', 'What to bring back: the Account name on the matching row (`A`). It’s to the left, and XLOOKUP doesn’t mind.', 'Accounts[Account name]'),
+          raw(')'),
+        ],
+        why: `${TABLE_TYPING_TIP} In older workbooks you’ll see the same lookup written as \`=INDEX(Accounts[Account name], MATCH(F2, Accounts[Account no], 0))\`. It gives the same answer.`,
+      }),
+      fillStep({
+        from: 'H2',
+        range: 'H2:H16',
+        direction: 'down',
+        why: '`F2` moves down to each entry’s account number in turn. The Table columns stay put.',
+      }),
+      checkStep('The coach re-sorts the Accounts Table and swaps in new journal entries behind the scenes, then puts everything back. XLOOKUP finds each number wherever its row ends up.'),
+    ];
+  },
   make: (rng) => {
     const accounts = rng.shuffle(GL_ACCOUNTS.map((a) => ({ name: a.name, type: a.type, no: a.no })));
     return { accounts, entries: entries(rng, accounts) };

@@ -1,6 +1,7 @@
 import type { RangeRead } from '../engine/fix';
+import type { StepProbe } from '../engine/guide';
 import type { SheetFormulas } from '../engine/scan';
-import type { Exercise, CheckReport, InputWrite } from '../engine/types';
+import type { Exercise, CheckReport, InputWrite, SheetSpot, StepDone } from '../engine/types';
 
 /** The bridge between the panel and a workbook. ExcelHost talks to Excel; MockHost fakes it for design work. */
 export interface CoachHost {
@@ -11,7 +12,10 @@ export interface CoachHost {
   /** Checks the learner's work. Rewrites inputs temporarily for each variant, then restores them. */
   check(ex: Exercise<any>, data: unknown, sheet: string, seed: number): Promise<CheckReport>;
   sheetExists(sheet: string): Promise<boolean>;
-  select(sheet: string, address: string): Promise<void>;
+  /** Selects a spot on a sheet: an A1 range, several ranges ("F6,F9") or a Table reference ("Inventory[Value]"). */
+  select(sheet: string, spot: SheetSpot): Promise<void>;
+  /** Reads what a walkthrough step needs to know whether it's done. Never writes. */
+  probe(ex: Exercise<any>, data: unknown, sheet: string, done: StepDone): Promise<StepProbe>;
   /** Reads formulas from every sheet except the coach's own, for the My Work scan. Local only. */
   readWorkbook(): Promise<{ name: string; sheets: SheetFormulas[]; truncated: boolean }>;
   /** Writes input regions on a practice sheet and leaves them (a mission step that adds new rows). */

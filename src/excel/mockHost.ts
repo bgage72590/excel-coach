@@ -1,7 +1,8 @@
 import type { RangeRead } from '../engine/fix';
 import { parseRange, rangeAddress } from '../engine/address';
 import type { SheetFormulas } from '../engine/scan';
-import type { CheckItem, CheckReport, Exercise, Grid } from '../engine/types';
+import type { StepProbe } from '../engine/guide';
+import type { CheckItem, CheckReport, Exercise, Grid, StepDone } from '../engine/types';
 import { fixSheetNameFor, type CoachHost } from './host';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -55,6 +56,20 @@ export class MockHost implements CoachHost {
   }
 
   async select(): Promise<void> {}
+
+  /** Steps read as done after a few looks (answers show a wrong-value note first), so the walkthrough can be clicked through. */
+  private looks = new Map<string, number>();
+  async probe(_ex: Exercise<any>, _data: unknown, sheet: string, done: StepDone): Promise<StepProbe> {
+    await sleep(150);
+    if (done.kind === 'check') return { done: false };
+    const key = `${sheet}:${JSON.stringify(done)}`;
+    const n = (this.looks.get(key) ?? 0) + 1;
+    this.looks.set(key, n);
+    if (n >= 2 && n <= 5 && done.kind === 'answer') {
+      return { done: false, note: 'I2 shows $0.00, but it should show $46,211.38.', focus: 'I2', formula: '=SUMIFS(Inventory[Warehouse],Inventory[Value],H2)' };
+    }
+    return { done: n >= (done.kind === 'answer' ? 6 : 3) };
+  }
 
   async writeInputs(): Promise<void> {
     await sleep(300);

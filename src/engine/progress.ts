@@ -39,6 +39,10 @@ export interface Session {
   attempts: number;
   hintsShown: number;
   revealed: boolean;
+  /** The walkthrough is open for this rep. A guided rep doesn't count toward mastery. */
+  guided?: boolean;
+  /** The walkthrough step on screen, so it survives reopening the panel. */
+  guideStep?: number;
   passedAt?: number;
 }
 
@@ -118,7 +122,7 @@ export function recordPass(state: ProgressState, now: number): PassOutcome {
   if (!session) throw new Error('No active session');
   const prev = progressFor(state, session.exerciseId);
   const elapsedMs = now - session.startedAt;
-  const counts = !session.revealed;
+  const counts = !session.revealed && !session.guided;
   const wasReview = prev.mastered && prev.reviewDue !== undefined && prev.reviewDue <= now;
 
   const passSeeds = counts && !prev.passSeeds.includes(session.seed) ? [...prev.passSeeds, session.seed] : prev.passSeeds;

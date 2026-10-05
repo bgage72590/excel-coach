@@ -1,7 +1,8 @@
 import { FIRST_NAMES, GL_ACCOUNTS, ITEMS, LAST_NAMES, VENDORS, WAREHOUSES, serial } from '../engine/data';
 import { round, type Rng } from '../engine/rng';
-import type { Block, ColumnSpec, Exercise, Grid } from '../engine/types';
+import type { Block, ColumnSpec, Exercise, Grid, GuideStep } from '../engine/types';
 import { FMT, cells, dataBlock, defineExercise } from './common';
+import { cellList, checkStep, isoDate, money, rowsWhere } from './guides';
 
 /** Shown in every Power Query exercise: the output never lands on the practice sheet. */
 const FINDS_IT =
@@ -16,6 +17,45 @@ const fromTable = (table: string) => `{fromTable:${table}}`;
  */
 const helperLoad = (table: string) =>
   `{nameQuery:${table}}then Home › Close & Load. In Excel for Mac its copy lands on a new sheet and does no harm (on Windows, Home › Close & Load To… › Only Create Connection skips the copy).`;
+
+// ---------- walkthrough steps ----------
+
+/** "`A`, `B` and `C`". */
+function listOf(items: string[]): string {
+  return items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+}
+
+/** Whole rows of a block, for a pointer: ("A", "D", [5, 9]) gives "A5:D5,A9:D9". */
+const rowSpans = (first: string, last: string, rows: number[]) => rows.map((r) => `${first}${r}:${last}${r}`).join(',');
+
+/** Opens the editor on a Table: From Table/Range on Windows, a Blank query on a Mac. */
+const startStep = (table: string, why: string): GuideStep => ({ do: `Choose ${fromTable(table)}.`, why });
+
+/** Loads the finished query to a new sheet. */
+const loadStep = (why: string): GuideStep => ({ do: 'Choose **Home › Close & Load**.', why });
+
+/** Saves a helper query under its Table's name, so Merge or Append can pick it. */
+const helperLoadStep = (table: string, command: string): GuideStep => ({
+  do: `Leave the ${table} rows as they are, {nameQuery:${table}}then choose **Home › Close & Load**.`,
+  why: `${command} picks from saved queries by name, so this one has to be called ${table}. Excel also loads a copy of the rows to a new sheet. It does no harm, and the coach ignores it (on Windows, **Home › Close & Load To… › Only Create Connection** skips the copy).`,
+});
+
+/** Clicking into a source Table, which also brings the learner back to the practice sheet. */
+const clickTable = (table: string, range: string, example: string, why: string, back = false): GuideStep => ({
+  do: `${back ? 'Go back to the practice sheet and click' : 'Click'} any cell in the **${table}** Table, for example \`${example}\`.`,
+  why,
+  done: { kind: 'select', range },
+});
+
+/** The last step. Query exercises have no variants, so the check reads the output once. */
+const queryCheck = (columns: string[], against: string): GuideStep =>
+  checkStep(
+    `The coach looks through the whole workbook for a table a query loaded with exactly these columns: ${listOf(columns.map((c) => `\`${c}\``))}. Then it compares the rows with ${against}, in any order.`,
+  );
+
+/** What the editor is, said once per walkthrough when it first opens. */
+const EDITOR_OPENS =
+  'The Power Query editor opens with a preview of the rows. What you build there is a query: a saved list of steps that Power Query replays every time you refresh. It works on a copy, so the Table itself never changes.';
 
 // ---------- Power Query text semantics ----------
 
@@ -150,6 +190,77 @@ export const pqCleanExport = defineExercise<CleanData>({
   ],
   solution: () =>
     `${fromTable('Export')} · Invoice: Trim, UPPERCASE · Vendor and Warehouse: Trim, Capitalize Each Word · Home › Remove Rows › Remove Blank Rows · select all columns › Remove Rows › Remove Duplicates · Home › Close & Load`,
+  guide: (d) => {
+    const lines = d.rows.filter((r): r is ExportLine => r !== null);
+    const blanks = d.rows.flatMap((r, i) => (r === null ? [i + 2] : []));
+    const out = distinctRows(lines.map(cleanLine)).length;
+    const repeats = lines.length - out;
+    // A line whose vendor needs recasing, to show before and after.
+    const messy = lines.find((r) => pqTrim(r.vendor) !== pqProper(pqTrim(r.vendor))) ?? lines[0];
+    const messyRow = d.rows.indexOf(messy) + 2;
+    const [invoice, vendor, warehouse] = cleanLine(messy);
+    // The first line exported twice, by sheet row.
+    const key = (r: ExportLine | null) => (r ? JSON.stringify(r) : '');
+    const firstCopy = d.rows.findIndex((r, i) => r !== null && d.rows.some((s, j) => j > i && key(s) === key(r)));
+    const twin = firstCopy < 0 ? -1 : d.rows.findIndex((s, j) => j > firstCopy && key(s) === key(d.rows[firstCopy]));
+    const pair = firstCopy < 0 ? undefined : { a: firstCopy + 2, b: twin + 2, line: d.rows[firstCopy]! };
+    return [
+      {
+        do: `Meet the data. The **Export** Table in columns \`A\` to \`D\` is a raw AP export of ${d.rows.length} rows.`,
+        why: `It has every kind of mess a system export can have: spaces before and after the text, random capitals, ${blanks.length} blank rows and ${repeats} lines exported twice. Tap the buttons to see some of it.`,
+        show: [
+          {
+            label: 'A messy line',
+            at: `A${messyRow}:D${messyRow}`,
+            note: `Row ${messyRow} reads \`${pqTrim(messy.invoice)}\`, \`${pqTrim(messy.vendor)}\`, \`${pqTrim(messy.warehouse)}\`. Many cells also carry stray spaces before or after the text.`,
+          },
+          { label: 'The blank rows', at: rowSpans('A', 'D', blanks), note: `Rows ${listOf(blanks.map(String))} are empty.` },
+          ...(pair
+            ? [
+                {
+                  label: 'A line exported twice',
+                  at: `A${pair.a}:D${pair.a},A${pair.b}:D${pair.b}`,
+                  note: `Rows ${pair.a} and ${pair.b} are the same line, spaces and capitals included: \`${pqTrim(pair.line.invoice)}\` for ${money(pair.line.amount)}.`,
+                },
+              ]
+            : []),
+        ],
+      },
+      {
+        do: 'See what the clean copy should look like.',
+        why: `The same four columns with ${out} rows: the ${lines.length} filled rows minus the ${repeats} repeats. Row ${messyRow} comes out as \`${invoice}\`, \`${vendor}\`, \`${warehouse}\`: no stray spaces, the invoice in capitals, and each word of a name capitalized. Row order doesn’t matter.`,
+      },
+      startStep('Export', `${EDITOR_OPENS} Each click from here on is listed under **Applied Steps**.`),
+      {
+        do: 'Click the **Invoice** column header to select the column, then choose **Transform › Format › Trim**.',
+        why: 'Trim deletes the spaces before and after the text in every row of the column. Unlike Excel’s TRIM, it leaves spaces inside the text alone, which is fine for this data.',
+      },
+      {
+        do: 'With **Invoice** still selected, choose **Transform › Format › UPPERCASE**.',
+        why: `Every invoice now reads like \`${invoice}\`, whatever capitals the export used.`,
+      },
+      {
+        do: 'Click the **Vendor** header, then ⌘-click (Ctrl-click on Windows) the **Warehouse** header so both columns are selected. Choose **Transform › Format › Trim**.',
+        why: 'One command trims both columns. Amount holds numbers, so it needs no trimming.',
+      },
+      {
+        do: 'With both still selected, choose **Transform › Format › Capitalize Each Word**.',
+        why: `\`${pqTrim(messy.vendor)}\` becomes \`${vendor}\`: the first letter of each word in capitals and the rest lower case.`,
+      },
+      {
+        do: 'Choose **Home › Remove Rows › Remove Blank Rows**.',
+        why: `The ${blanks.length} empty rows drop out. A row counts as blank only when every cell in it is empty.`,
+      },
+      {
+        do: 'Click the **Invoice** header, then Shift-click the **Amount** header to select all four columns. Choose **Home › Remove Rows › Remove Duplicates**.',
+        why: `Power Query keeps the first copy of each row and drops any later row that matches it in every selected column. The ${repeats} repeated lines go, leaving ${out} rows.`,
+      },
+      loadStep(
+        'The editor closes and the clean rows land on a new sheet as a Table. That sheet is your answer, and the coach finds it wherever it is. Next month, paste the new export into `Export` and choose **Data › Refresh All** to replay every step.',
+      ),
+      queryCheck(['Invoice', 'Vendor', 'Warehouse', 'Amount'], 'the cleaned export'),
+    ];
+  },
   make: (rng) => ({ rows: exportLines(rng) }),
   layout: (d) => ({
     blocks: [dataBlock('Export', 'A1', EXPORT_COLS, exportGrid(d.rows))],
@@ -215,6 +326,46 @@ export const pqUnpivot = defineExercise<UnpivotData>({
     'Double-click Attribute and rename it Month, double-click Value and rename it Budget, then Home › Close & Load.',
   ],
   solution: () => `${fromTable('Budget')} · right-click Account › Unpivot Other Columns · rename Attribute to Month and Value to Budget · Home › Close & Load`,
+  guide: (d) => {
+    const first = d.rows[0];
+    const lastCol = String.fromCharCode(65 + d.months.length);
+    const n = d.rows.length * d.months.length;
+    // The sheet shows whole dollars: $12,000.
+    const dollars = (v: number) => `$${v.toLocaleString('en-US')}`;
+    const outRow = (i: number) => `\`${first.account} | ${d.months[i]} | ${dollars(first.amounts[i])}\``;
+    return [
+      {
+        do: `Meet the data. The **Budget** Table has one row per GL account and one column per month, \`${d.months[0]}\` to \`${d.months[d.months.length - 1]}\`.`,
+        why: 'This wide shape reads well, but a PivotTable or SUMIFS can’t treat the month as one field, because each month is its own column.',
+        show: [
+          { label: 'Account column', at: 'Budget[Account]', note: `${d.rows.length} GL accounts, one per row. This column stays as it is.` },
+          { label: 'Month headers', at: `B1:${lastCol}1`, note: `${d.months.length} month columns. These headers become values in a new Month column.` },
+        ],
+      },
+      {
+        do: 'See what the long list should look like.',
+        why: `To unpivot is to turn columns into rows. ${first.account}’s row becomes ${d.months.length} rows, one per month: ${outRow(0)}, ${outRow(1)}, ${outRow(2)} and so on. ${d.rows.length} accounts × ${d.months.length} months gives ${n} rows with three columns: \`Account\`, \`Month\` and \`Budget\`. Row order doesn’t matter.`,
+        show: [{ label: `${first.account}’s row`, at: `A2:${lastCol}2`, note: `This one row becomes ${d.months.length} rows in the output.` }],
+      },
+      startStep('Budget', EDITOR_OPENS),
+      {
+        do: 'Right-click the **Account** column header and choose **Unpivot Other Columns**.',
+        why: `Account stays fixed and every other column folds into two new ones: Attribute holds the old header, such as \`${d.months[0]}\`, and Value holds the amount. The preview now has ${n} rows, ${d.months.length} per account.`,
+      },
+      {
+        do: 'Double-click the **Attribute** header, type `Month` and press {enter}.',
+        why: 'The column of month names gets the name the output needs.',
+      },
+      {
+        do: 'Double-click the **Value** header, type `Budget` and press {enter}.',
+        why: `The columns now read Account, Month and Budget, and the first row reads ${outRow(0)}.`,
+      },
+      loadStep(
+        'The long list lands on a new sheet as a Table. That sheet is your answer, and the coach finds it wherever it is. Because you unpivoted every column except Account, a month column added to `Budget` later is picked up the next time you refresh.',
+      ),
+      queryCheck(['Account', 'Month', 'Budget'], `the ${n} account-and-month rows`),
+    ];
+  },
   make: (rng) => {
     const months = [...rng.pick(HALVES)];
     return { months, rows: budgetLines(rng, months.length) };
@@ -292,6 +443,67 @@ export const pqMerge = defineExercise<MergeData>({
   ],
   solution: () =>
     `Items: ${fromTable('Items')} › {nameQuery:Items}Home › Close & Load (Windows: Close & Load To › Only Create Connection) · Orders: ${fromTable('Orders')} › Home › Combine › Merge Queries with Items on SKU, Left Outer › expand Category without the prefix › Home › Close & Load`,
+  guide: (d) => {
+    const line = d.orders[0];
+    const at = d.items.findIndex((i) => i.sku === line.sku);
+    const item = d.items[at];
+    const itemRow = at + 2;
+    return [
+      {
+        do: 'Meet the data. The **Orders** Table in columns `A` to `C` lists order lines by SKU. The **Items** Table in columns `E` to `H` holds each SKU’s item, category and unit cost.',
+        why: 'SKU is the column the two Tables share. Power Query uses it to find each order line’s row in Items, the way a lookup formula would.',
+        show: [
+          { label: 'Orders SKU column', at: 'Orders[SKU]', note: `${d.orders.length} order lines, each with a SKU.` },
+          { label: 'Items SKU column', at: 'Items[SKU]', note: `${d.items.length} SKUs, each listed once.` },
+          { label: 'Items Category column', at: 'Items[Category]', note: 'The column to bring across to the order lines.' },
+        ],
+      },
+      {
+        do: `See what the first order line should get: the category of ${line.sku}.`,
+        why: `The output keeps all ${d.orders.length} order lines and adds a Category column. ${line.order}’s first line is ${line.sku}, so its Category is ${item.category}.`,
+        show: [
+          {
+            label: `Find ${line.sku} in Items`,
+            at: `E${itemRow}:H${itemRow}`,
+            note: `${line.sku} is ${item.item}, in the ${item.category} category. That’s the Category the first output row should show.`,
+          },
+        ],
+      },
+      clickTable('Items', `E1:H${d.items.length + 1}`, 'E2', 'Items comes first because Merge Queries can only pick from queries that already exist.'),
+      startStep('Items', `${EDITOR_OPENS} This one only has to exist, so you won’t change anything in it.`),
+      helperLoadStep('Items', 'Merge Queries'),
+      clickTable('Orders', `A1:C${d.orders.length + 1}`, 'A2', 'Close & Load put the copy of Items on a new sheet. The practice sheet is the tab you started on.', true),
+      startStep('Orders', 'This is the main query: the one that gets the Category column.'),
+      {
+        do: 'Choose **Home › Combine › Merge Queries**.',
+        why: 'The Merge dialog opens with a preview of the Orders rows at the top.',
+      },
+      {
+        do: 'In the second list, below the Orders preview, pick **Items**.',
+        why: 'A preview of the Items rows appears underneath.',
+      },
+      {
+        do: 'Click the **SKU** header in the Orders preview, then the **SKU** header in the Items preview.',
+        why: 'That tells Power Query which columns to match, like the lookup value and the lookup column of an XLOOKUP.',
+      },
+      {
+        do: 'Leave **Join Kind** on **Left Outer (all from first, matching from second)** and click **OK**.',
+        why: 'A join is how two tables are matched up. Left Outer keeps every Orders row and brings in its matching Items row. A new column named Items appears at the right with Table in every row: each holds that line’s Items row, folded up.',
+      },
+      {
+        do: 'Click the expand button (two arrows) in the **Items** column header.',
+        why: 'A list of the Items columns drops down, so you can pick which ones to bring in.',
+      },
+      {
+        do: 'In the list, leave only **Category** ticked and untick **Use original column name as prefix**. Click **OK**.',
+        why: `The Items column turns into a Category column, and ${line.order}’s ${line.sku} line now shows ${item.category}. With the prefix box ticked, the column would be named Items.Category instead.`,
+      },
+      loadStep(
+        'The order lines land on a new sheet as a Table with Order, SKU, Qty and Category. That sheet is your answer, and the coach finds it wherever it is.',
+      ),
+      queryCheck(['Order', 'SKU', 'Qty', 'Category'], 'every order line and its category'),
+    ];
+  },
   make: (rng) => {
     const items = itemRefs(rng);
     return { items, orders: orderLines(rng, items) };
@@ -372,6 +584,16 @@ function apBlocks(d: AppendData): Block[] {
   return blocks;
 }
 
+/** Where apBlocks puts each monthly Table: its range on the sheet and its first data cell. */
+function apSpots(d: AppendData): { range: string; firstCell: string }[] {
+  let row = 1;
+  return d.months.map((m) => {
+    const header = row + 1;
+    row += m.rows.length + 3;
+    return { range: `A${header}:E${header + m.rows.length}`, firstCell: `A${header + 1}` };
+  });
+}
+
 export const pqAppend = defineExercise<AppendData>({
   id: 'pq-append',
   module: 'powerquery',
@@ -396,6 +618,52 @@ export const pqAppend = defineExercise<AppendData>({
   ],
   solution: () =>
     `AP_Aug and AP_Sep: ${fromTable('AP_Aug')} (and the same for AP_Sep) › {nameQuery:AP_Aug}Home › Close & Load (Windows: Close & Load To › Only Create Connection) · AP_Jul: ${fromTable('AP_Jul')} › Home › Combine › Append Queries › Three or more tables (AP_Aug, AP_Sep) › remove Entered by › Home › Close & Load`,
+  guide: (d) => {
+    const [jul, aug, sep] = apSpots(d);
+    const total = apTotal(d);
+    const counts = listOf(d.months.map((m) => `${m.rows.length} in ${m.label}`));
+    const first = d.months[0].rows[0];
+    return [
+      {
+        do: 'Meet the data. Three Tables are stacked down column `A`: **AP_Jul**, **AP_Aug** and **AP_Sep**, one per month, each with the same five columns.',
+        why: 'Each Table is one month’s invoice file. To append is to stack queries on top of each other, matching columns by name, so the output holds every row from all three.',
+        show: d.months.map((m) => ({ label: m.table, at: `${m.table}[#All]`, note: `${m.label}: ${m.rows.length} invoices.` })),
+      },
+      {
+        do: 'See what the output should look like.',
+        why: `All ${total} rows in one table (${counts}), with four columns: \`Date\`, \`Invoice\`, \`Vendor\` and \`Amount\`. The first row is ${first.invoice} from ${first.vendor}, dated ${isoDate(first.date)}, for ${money(first.amount)}. Row order doesn’t matter.`,
+        show: [{ label: 'Entered by column', at: 'AP_Jul[Entered by]', note: 'This column stays out of the output. You’ll remove it after stacking the three months.' }],
+      },
+      clickTable('AP_Aug', aug.range, aug.firstCell, 'August and September come first because Append Queries can only pick from queries that already exist.'),
+      startStep('AP_Aug', `${EDITOR_OPENS} This one only has to exist, so you won’t change anything in it.`),
+      helperLoadStep('AP_Aug', 'Append Queries'),
+      clickTable('AP_Sep', sep.range, sep.firstCell, 'Close & Load put the copy of August on a new sheet. The practice sheet is the tab you started on. September needs a query too.', true),
+      startStep('AP_Sep', 'The editor opens with the September rows. Again, change nothing.'),
+      helperLoadStep('AP_Sep', 'Append Queries'),
+      clickTable('AP_Jul', jul.range, jul.firstCell, 'Now build the main query, starting from July.', true),
+      startStep('AP_Jul', 'This is the main query. The other two months get stacked under its rows.'),
+      {
+        do: 'Choose **Home › Combine › Append Queries**.',
+        why: 'The Append dialog opens.',
+      },
+      {
+        do: 'Choose **Three or more tables**.',
+        why: 'Two lists appear: the queries you can add on the left, and the ones to stack on the right, starting with AP_Jul, the query you’re in.',
+      },
+      {
+        do: 'Add **AP_Aug** and **AP_Sep** to the list on the right (select each one in the left-hand list, then click the add button between the lists). Click **OK**.',
+        why: `The August and September rows now sit under July’s: ${total} rows in all.`,
+      },
+      {
+        do: 'Right-click the **Entered by** header and choose **Remove** (**Remove columns** on Mac).',
+        why: 'Four columns are left: Date, Invoice, Vendor and Amount.',
+      },
+      loadStep(
+        `All ${total} invoices land on a new sheet as one Table. That sheet is your answer, and the coach finds it wherever it is. When a month’s file gets more rows, **Data › Refresh All** picks them up.`,
+      ),
+      queryCheck(['Date', 'Invoice', 'Vendor', 'Amount'], `all ${total} invoices`),
+    ];
+  },
   make: (rng) => ({ months: apMonths(rng) }),
   layout: (d) => ({
     blocks: apBlocks(d),
@@ -470,6 +738,59 @@ export const pqGroup = defineExercise<GroupData>({
     'In the dialog, keep Basic, set New column name to Total units, Operation to Sum and Column to Units, then OK and Home › Close & Load.',
   ],
   solution: (d) => `${fromTable('Shipments')} · Transform › Group By ${d.by}, New column name: Total units, Operation: Sum, Column: Units · Home › Close & Load`,
+  guide: (d) => {
+    const noun = d.by.toLowerCase();
+    const nouns = d.by === 'Category' ? 'categories' : 'warehouses';
+    const totals = groupTotals(d);
+    const group = String(totals[0][0]);
+    const groupTotal = Number(totals[0][1]);
+    const keep = (s: Shipment) => groupKey(s, d.by) === group;
+    const units = (n: number) => n.toLocaleString('en-US');
+    return [
+      {
+        do: `Meet the data. The **Shipments** Table has ${d.rows.length} shipment lines, each with a ${noun} and a number of units.`,
+        why: `You’ll collapse it to one row per ${noun} with the units added up: the summary you’d otherwise build from a list of ${nouns} and a SUMIF beside each one.`,
+        show: [
+          { label: `${d.by} column`, at: `Shipments[${d.by}]`, note: `${totals.length} different ${nouns} appear here. Each one becomes a row of the output.` },
+          { label: 'Units column', at: 'Shipments[Units]', note: 'The numbers to add up within each group.' },
+        ],
+      },
+      {
+        do: `See what ${group}’s row should show.`,
+        why: `The output has ${totals.length} rows, one per ${noun}, and two columns: \`${d.by}\` and \`Total units\`. Row order doesn’t matter.`,
+        show: d.rows.some(keep)
+          ? [
+              {
+                label: `Select ${group}’s units`,
+                at: cellList('E', rowsWhere(d.rows, keep)),
+                note: `Look at **Sum** in the status bar at the bottom of the Excel window: ${units(groupTotal)}. That’s the Total units for ${group}.`,
+              },
+            ]
+          : undefined,
+      },
+      startStep('Shipments', EDITOR_OPENS),
+      {
+        do: `Click the **${d.by}** column header.`,
+        why: `Group By uses the selected column as the one to group on: one output row per ${noun}.`,
+      },
+      {
+        do: 'Choose **Transform › Group By**.',
+        why: `On Windows it’s also on the **Home** tab. The Group By dialog opens with ${d.by} as the column to group by. If it shows another column, pick ${d.by} there.`,
+      },
+      {
+        do: 'Leave **Basic** selected. In **New column name**, type `Total units` in place of what’s there.',
+        why: 'That’s the header the totals column gets in the output.',
+      },
+      {
+        do: 'Set **Operation** to **Sum** and **Column** to **Units**, then click **OK**.',
+        why: `Power Query adds up Units within each ${noun}. The ${d.rows.length} rows collapse to ${totals.length}, and ${group}’s row shows ${units(groupTotal)}. Every other column drops out.`,
+      },
+      loadStep(
+        `The ${totals.length} totals land on a new sheet as a Table with ${d.by} and Total units. That sheet is your answer, and the coach finds it wherever it is.`,
+      ),
+      queryCheck([d.by, 'Total units'], `the units added up for each ${noun}`),
+    ];
+  },
   make: (rng) => {
     const by: GroupField = rng.pick(['Warehouse', 'Category'] as const);
     return { by, rows: shipments(rng) };

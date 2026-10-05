@@ -1,11 +1,21 @@
 import { CATEGORIES, EXTRA_VENDORS, REPS, VENDORS, excelTextCompare, sum } from '../engine/data';
 import { round, type Rng } from '../engine/rng';
 import type { CellMatcher, ColumnSpec, ExpectedGrid, Grid } from '../engine/types';
+import { numberToCol } from '../engine/address';
 import { FMT, cells, dataBlock, defineExercise, rangeWrite, tableWrite } from './common';
+import { TABLE_TYPING_TIP, cellList, checkStep, fillStep, money, part, raw, rowsWhere, typeStep } from './guides';
 import { SPEND_COLS, spendGrid, spendLine } from './sumifs';
 
 /** Whole dollars, for sales figures and thresholds. */
 const DOLLARS = '$#,##0';
+
+const wholeUsd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+/** $12,345, the way a DOLLARS cell shows. */
+const dollars = (n: number) => wholeUsd.format(n);
+/** 3.5%, the way an FMT.pct cell shows. */
+const pct = (n: number) => `${(n * 100).toFixed(1)}%`;
+/** 1,234, the way an FMT.int cell shows. */
+const count = (n: number) => n.toLocaleString('en-US');
 
 // ---------- Tiered commission rate, no nested IFs ----------
 
@@ -91,6 +101,64 @@ export const xlookupTiered = defineExercise<TierData>({
     '=XLOOKUP(E2, Tiers[Min sales], Tiers[Rate], , -1), then fill down to F9.',
   ],
   solution: () => '=XLOOKUP(E2,Tiers[Min sales],Tiers[Rate],,-1)',
+  guide: (d) => {
+    const rep = d.reps[0];
+    // The tier XLOOKUP(…, -1) lands on: the largest Min sales at or below the rep's sales.
+    const at = d.tiers.reduce((best, t, i) => (t.min <= rep.sales && t.min >= d.tiers[best].min ? i : best), 0);
+    const tier = d.tiers[at];
+    const onLine = d.reps.find((r) => r !== rep && r.sales > 0 && d.tiers.some((t) => t.min === r.sales));
+    const last = d.reps.length + 1;
+    return [
+      {
+        do: `Meet the data. The rate card in \`A1:B${d.tiers.length + 1}\` is a Table named **Tiers**. Each row is a tier: the lowest sales that earn it (Min sales) and the rate it pays.`,
+        why: 'Reading down, the thresholds climb and so do the rates. A rep earns the rate of the last tier they reach: the highest Min sales at or below their quarter sales.',
+        show: [
+          { label: 'Min sales column', at: 'Tiers[Min sales]', note: 'That’s `Tiers[Min sales]` (column `A`): the thresholds, smallest first.' },
+          { label: 'Rate column', at: 'Tiers[Rate]', note: 'That’s `Tiers[Rate]` (column `B`): the rate each tier pays.' },
+          { label: 'Quarter sales', at: `E2:E${last}`, note: 'Each rep’s sales for the quarter. Your formula looks each one up on the rate card.' },
+        ],
+      },
+      {
+        do: `See what \`F2\` should show. ${rep.rep} sold ${dollars(rep.sales)}.`,
+        why:
+          rep.sales === tier.min
+            ? `${dollars(rep.sales)} is exactly a threshold, so ${rep.rep} earns that tier’s rate: ${pct(tier.rate)}.`
+            : `No threshold equals ${dollars(rep.sales)}, so an exact match would find nothing. Read down Min sales and stop at the last one that isn’t above it: ${dollars(tier.min)}. That tier pays ${pct(tier.rate)}.`,
+        show: [
+          {
+            label: `Select ${rep.rep}’s tier`,
+            at: `A${at + 2}:B${at + 2}`,
+            note: `${dollars(tier.min)} is the highest Min sales at or below ${dollars(rep.sales)}. Its rate, ${pct(tier.rate)}, is the number for \`F2\`.`,
+          },
+        ],
+      },
+      typeStep({
+        cell: 'F2',
+        formula: [
+          part('=XLOOKUP(', 'Looks a value up in one column and returns the value on the same row of another.'),
+          part('E2', `What to look up: this rep’s quarter sales in \`E2\` (${dollars(rep.sales)}).`, 'E2'),
+          raw(', '),
+          part('Tiers[Min sales]', 'Where to look: the thresholds.', 'Tiers[Min sales]'),
+          raw(', '),
+          part('Tiers[Rate]', 'What to return: the rate on the row it lands on.', 'Tiers[Rate]'),
+          part(', ,', 'Two commas with nothing between them. The empty slot is the fourth argument, what to show when nothing is found. Leave it empty: every rep reaches at least the $0 tier.'),
+          raw(' '),
+          part('-1', `The match mode. \`-1\` means an exact match, or else the next smaller value. So ${dollars(rep.sales)} lands on ${dollars(tier.min)}.`),
+          raw(')'),
+        ],
+        why: TABLE_TYPING_TIP,
+      }),
+      fillStep({
+        from: 'F2',
+        range: `F2:F${last}`,
+        direction: 'down',
+        why: `Excel moves \`E2\` down to each rep’s sales; the Tiers columns stay put.${
+          onLine ? ` ${onLine.rep} sold exactly ${dollars(onLine.sales)}, a threshold, and gets that tier’s rate, because \`-1\` takes an exact match first.` : ''
+        }`,
+      }),
+      checkStep('The coach changes the thresholds and rates, changes the sales and adds a new top tier behind the scenes, then puts everything back. Your formula reads the Tiers Table by column name, so it keeps up with each change.'),
+    ];
+  },
   make: (rng) => {
     const tiers = makeTiers(rng);
     return { tiers, reps: makeSales(rng, tiers, rng.shuffle(REPS)) };
@@ -218,6 +286,64 @@ export const lookupTwoWay = defineExercise<TwoWayData>({
     '=INDEX($B$2:$F$7, MATCH(I2, $A$2:$A$7, 0), MATCH(J2, $B$1:$F$1, 0)). Press {absKey} on each range to lock it, then fill down.',
   ],
   solution: () => '=INDEX($B$2:$F$7,MATCH(I2,$A$2:$A$7,0),MATCH(J2,$B$1:$F$1,0))',
+  guide: (d) => {
+    const ship = d.ships[0];
+    const zoneAt = d.card.zones.indexOf(ship.zone) + 1;
+    const bandAt = (BANDS as readonly string[]).indexOf(ship.band) + 1;
+    const col = numberToCol(1 + bandAt);
+    const row = 1 + zoneAt;
+    const rate = cardRate(d.card, ship.zone, ship.band);
+    return [
+      {
+        do: 'Meet the layout. The rate card fills `A1:F7`: zones run down column `A`, weight bands run across row `1`, and each rate sits where a zone’s row meets a band’s column.',
+        why: 'Each shipment in `H2:J21` names a zone (column `I`) and a weight band (column `J`). Its rate is the cell where that zone’s row and that band’s column cross on the card.',
+        show: [
+          { label: 'Zones', at: 'A2:A7', note: 'The zones: one row of the card each.' },
+          { label: 'Weight bands', at: 'B1:F1', note: 'The weight bands: one column of the card each.' },
+          { label: 'Rates', at: 'B2:F7', note: 'The rates. Your formula picks one of these for each shipment.' },
+        ],
+      },
+      {
+        do: `See what \`K2\` should show. Shipment ${ship.id} is ${ship.zone}, ${ship.band}.`,
+        why: `${ship.zone} is number ${zoneAt} in the zone list, and ${ship.band} is number ${bandAt} in the band list. So the rate is in row ${zoneAt}, column ${bandAt} of the rates.`,
+        show: [
+          { label: `${ship.zone} row`, at: `A${row}:F${row}`, note: `${ship.zone} is number ${zoneAt} down the zone list.` },
+          { label: `${ship.band} column`, at: `${col}1:${col}7`, note: `${ship.band} is number ${bandAt} across the band list.` },
+          { label: 'Where they cross', at: `${col}${row}`, note: `\`${col}${row}\` holds ${money(rate)}. That’s the number for \`K2\`.` },
+        ],
+      },
+      typeStep({
+        cell: 'K2',
+        formula: [
+          part('=INDEX(', 'Returns the cell at a given row number and column number inside a block of cells.'),
+          part('$B$2:$F$7', 'The block: the rates on the card. The `$` signs lock it, so it stays put when you fill down.', 'B2:F7'),
+          raw(', '),
+          part('MATCH(', 'Which row? MATCH gives the position of a value in a list: 1 for the first item, 2 for the second, and so on.'),
+          part('I2', `The value to find: this shipment’s zone in \`I2\` (${ship.zone}).`, 'I2'),
+          raw(', '),
+          part('$A$2:$A$7', `The list to find it in: the zones down the card, locked with \`$\`. ${ship.zone} is number ${zoneAt}.`, 'A2:A7'),
+          raw(', '),
+          part('0', 'Exact match only.'),
+          raw('), '),
+          part('MATCH(', 'Which column? A second MATCH, this time across the top.'),
+          part('J2', `The value to find: this shipment’s weight band in \`J2\` (${ship.band}).`, 'J2'),
+          raw(', '),
+          part('$B$1:$F$1', `The list to find it in: the bands across row \`1\`, locked with \`$\`. ${ship.band} is number ${bandAt}.`, 'B1:F1'),
+          raw(', '),
+          part('0', 'Exact match again.'),
+          part('))', `Closes the second MATCH, then INDEX. INDEX now has row ${zoneAt} and column ${bandAt} of the rates: ${money(rate)}.`),
+        ],
+        why: 'Adding the `$`: after typing a range, press {absKey} until it reads `$B$2:$F$7`, and do the same for the two lists. Leave `I2` and `J2` without `$`, so they move down a row as you fill.',
+      }),
+      fillStep({
+        from: 'K2',
+        range: 'K2:K21',
+        direction: 'down',
+        why: 'Fill Down copies `K2`’s formula into the cells below. `I2` and `J2` move down to each shipment’s zone and band, and the three locked ranges stay on the card.',
+      }),
+      checkStep('The coach changes the rates, re-sorts the zones on the card and swaps the shipments behind the scenes, then puts everything back. MATCH finds each zone by its name wherever it sits, so your rates stay right.'),
+    ];
+  },
   make: (rng) => ({ card: makeCard(rng), ships: makeZoneShips(rng) }),
   layout: (d) => ({
     blocks: [
@@ -310,6 +436,49 @@ export const byrowPeak = defineExercise<DailyData>({
     '=BYROW(DailyUnits[[Mon]:[Sun]], LAMBDA(r, MAX(r)))',
   ],
   solution: () => '=BYROW(DailyUnits[[Mon]:[Sun]],LAMBDA(r,MAX(r)))',
+  guide: (d) => {
+    const first = d.rows[0];
+    const peak = Math.max(...first.units);
+    const peakDay = first.units.indexOf(peak);
+    const last = d.rows.length + 1;
+    const days = `B2:H${last}`;
+    const gridMax = Math.max(...d.rows.flatMap((r) => r.units));
+    return [
+      {
+        do: 'Meet the data. The blue block is a Table named **DailyUnits**: one row per SKU, and one column per day from Mon (column `B`) to Sun (column `H`).',
+        why: 'In a formula, `DailyUnits[[Mon]:[Sun]]` means the Table’s Mon through Sun columns together: every number in the grid, without the SKU column.',
+        show: [{ label: 'Mon to Sun columns', at: days, note: 'That’s `DailyUnits[[Mon]:[Sun]]`: the units each SKU shipped on each day.' }],
+      },
+      {
+        do: `See what \`J2\` should show: the largest of ${first.sku}’s seven daily numbers.`,
+        why: `\`MAX\` over the whole grid would give a single number, ${count(gridMax)}, for all the SKUs together. You want one peak per row, and that’s what BYROW is for.`,
+        show: [
+          { label: `Select ${first.sku}’s week`, at: 'B2:H2', note: `${first.sku}’s seven days, Mon to Sun. The biggest is ${count(peak)}.` },
+          {
+            label: 'Select its peak day',
+            at: `${numberToCol(2 + peakDay)}2`,
+            note: `${DAYS[peakDay]}: ${count(peak)} units. That’s the number for \`J2\`.`,
+          },
+        ],
+      },
+      typeStep({
+        cell: 'J2',
+        whole: true,
+        formula: [
+          part('=BYROW(', 'Runs a calculation on each row in turn and gives back one result per row.'),
+          part('DailyUnits[[Mon]:[Sun]]', 'The rows to work through: the Table’s Mon to Sun columns.', days),
+          raw(', '),
+          part('LAMBDA(', 'The calculation to run on each row. LAMBDA writes a small formula with a name for its input.'),
+          part('r', `The input’s name. Each time round, \`r\` stands for one row: first ${first.sku}’s seven numbers in \`B2:H2\`, then the next row, and so on.`, 'B2:H2'),
+          raw(', '),
+          part('MAX(r)', 'What to work out for each row: its largest number.'),
+          part('))', 'Closes LAMBDA, then BYROW.'),
+        ],
+        why: `Typing tip: type \`=BYROW(\`, then drag across \`${days}\`, and Excel writes \`DailyUnits[[Mon]:[Sun]]\` for you. One formula is enough: the peaks spill, which means Excel writes them into \`J2\` and the cells below, one per SKU (\`J2:J${last}\`). Keep those cells empty: a #SPILL! error means something is in the way.`,
+      }),
+      checkStep('The coach changes the daily units and adds two SKUs to the Table behind the scenes, then puts everything back. BYROW reads the Table’s columns, so the new SKUs get a peak too.'),
+    ];
+  },
   make: (rng) => ({ rows: dailyRows(rng, 20) }),
   layout: (d) => ({
     blocks: [dataBlock('DailyUnits', 'A1', DAILY_COLS, dailyGrid(d.rows)), cells('J1', [['Peak daily units']], 'header')],
@@ -414,6 +583,56 @@ export const pivotbyVendorCategory = defineExercise<CrossTabData>({
     '=PIVOTBY(Spend[Vendor], Spend[Category], Spend[Amount], SUM)',
   ],
   solution: () => '=PIVOTBY(Spend[Vendor],Spend[Category],Spend[Amount],SUM)',
+  guide: (d) => {
+    const vendors = sortedUnique(d.rows.map((r) => r.vendor));
+    const cats = sortedUnique(d.rows.map((r) => r.category));
+    const [vendor, cat] = [vendors[0], cats[0]];
+    const keep = (r: SpendRow) => r.vendor === vendor && r.category === cat;
+    const total = sum(d.rows.filter(keep).map((r) => r.amount));
+    // Row labels in F, one column per category from G, then the Total column; header row 2, Total row last.
+    const area = `F2:${numberToCol(7 + cats.length)}${3 + vendors.length}`;
+    return [
+      {
+        do: 'Meet the data. The blue block in columns `A` to `D` is a Table named **Spend**. Each row is one purchase from a vendor, in a category.',
+        why: 'A cross-tab puts one field down the side and another across the top, with a total where each row meets each column. Here: vendors down the side, categories across the top, and Amount added up in the middle.',
+        show: [
+          { label: 'Vendor column', at: 'Spend[Vendor]', note: `That’s \`Spend[Vendor]\` (column \`B\`): ${vendors.length} vendors, one row each in the cross-tab.` },
+          { label: 'Category column', at: 'Spend[Category]', note: `That’s \`Spend[Category]\` (column \`C\`): ${cats.length} categories, one column each.` },
+          { label: 'Amount column', at: 'Spend[Amount]', note: 'That’s `Spend[Amount]` (column `D`): the numbers to add up.' },
+        ],
+      },
+      {
+        do: `See the shape of the result: ${vendors.length} vendors down the side and ${cats.length} categories across the top, both A to Z, plus a Total row and a Total column.`,
+        why: `It will fill \`${area}\`. The category names run across row \`2\` from \`G2\`, and the vendor names run down column \`F\` from \`F3\`. So \`G3\` is ${vendor} in ${cat}.`,
+        show: d.rows.some(keep)
+          ? [
+              {
+                label: `Select ${vendor} in ${cat}`,
+                at: cellList('D', rowsWhere(d.rows, keep)),
+                note: `The status bar’s **Sum** is ${money(total)}. That’s where ${vendor}’s row meets the ${cat} column: \`G3\`, the first number in the cross-tab.`,
+              },
+            ]
+          : undefined,
+      },
+      typeStep({
+        cell: 'F2',
+        whole: true,
+        formula: [
+          part('=PIVOTBY(', 'Builds a cross-tab: one field down the side, one across the top, and a summary where they meet.'),
+          part('Spend[Vendor]', 'Down the side: one row per vendor.', 'Spend[Vendor]'),
+          raw(', '),
+          part('Spend[Category]', 'Across the top: one column per category.', 'Spend[Category]'),
+          raw(', '),
+          part('Spend[Amount]', 'The numbers to summarize.', 'Spend[Amount]'),
+          raw(', '),
+          part('SUM', 'How to combine the amounts where a row meets a column: add them. Type the name alone, with no bracket after it. If you pick SUM from Excel’s list and it adds `(`, delete the `(`.'),
+          raw(')'),
+        ],
+        why: `${TABLE_TYPING_TIP} The cross-tab spills, which means Excel writes it into \`F2\` and the cells below and to the right, \`${area}\` today. Keep that area empty: a #SPILL! error means something is in the way.`,
+      }),
+      checkStep('The coach changes the amounts and adds a new vendor behind the scenes, then puts everything back. PIVOTBY reads whole Table columns, so the new vendor gets its own row.'),
+    ];
+  },
   make: (rng) => ({ rows: crossTabRows(rng) }),
   layout: (d) => ({
     blocks: [dataBlock('Spend', 'A1', SPEND_COLS, spendGrid(d.rows)), cells('F1', [['Spend by vendor and category']], 'label')],

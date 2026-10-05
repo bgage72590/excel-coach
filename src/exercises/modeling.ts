@@ -3,9 +3,33 @@ import { DEPARTMENTS, VENDORS, eomonth, fromSerial, serial, sum } from '../engin
 import { round, type Rng } from '../engine/rng';
 import type { ColumnSpec, Exercise, Grid, Inspection, PlantedBug, Rules, Variant } from '../engine/types';
 import { FMT, cells, column, dataBlock, defineExercise, rangeWrite, tableWrite } from './common';
+import { checkStep, fillStep, money, part, raw, typeStep } from './guides';
 
 /** Whole dollars, for fixed costs and expense amounts. */
 const USD0 = '$#,##0';
+
+// ---------- walkthrough helpers ----------
+
+const WHOLE = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
+
+/** 12,345: a number the way a #,##0 cell shows it. */
+const wholeNum = (n: number) => WHOLE.format(n);
+
+/** $12,345: whole dollars, the way a USD0 cell shows them. */
+const dollars = (n: number) => `${n < 0 ? '-' : ''}$${WHOLE.format(Math.abs(n))}`;
+
+/** 1.2%: a rate the way a 0.0% cell shows it. */
+const pct = (n: number) => `${(n * 100).toFixed(1)}%`;
+
+/** A 'sheet' inspection that passes once `cell` shows `value`, for "try it" steps. */
+const cellShows = (cell: string, value: string | number, describe: string, label: string): Inspection => ({
+  kind: 'sheet',
+  check: { kind: 'values', range: cell, expected: [[value]], describe },
+  label,
+});
+
+/** A pattern for a reference to `col``row`, with or without $ signs. */
+const refPattern = (col: string, row: number) => `\\$?${col}\\$?${row}`;
 
 // ---------- shared: scenarios ----------
 
@@ -237,6 +261,69 @@ export const modelScenarioSwitch = defineExercise<ScenarioData>({
     '`=XLOOKUP($B$1, $B$3:$D$3, B4:D4)` in `E4`, then fill down to `E7`.',
   ],
   solution: () => 'Data › Data Validation on B1: Allow List, Source =$B$3:$D$3. Live column: =XLOOKUP($B$1,$B$3:$D$3,B4:D4) in E4, filled down to E7.',
+  guide: (d) => {
+    const col = numberToCol(2 + d.columns.indexOf(d.scenario));
+    const live = liveValues(d)[0];
+    return [
+      {
+        do: 'Meet the layout. The three cases sit side by side in `B4:D7`, under their names in `B3:D3`. `B1` says which case the model uses.',
+        why: 'Column `E`, the Live column, will show the chosen case’s values. The rest of a model reads only the Live column, so changing `B1` reruns everything for another case.',
+        show: [
+          { label: 'Scenario names', at: 'B3:D3', note: 'The header row. Your formula will look for the case’s name here.' },
+          { label: 'The switch', at: 'B1', note: `\`B1\` holds ${d.scenario}. First you’ll give it a dropdown.` },
+          { label: 'Live column', at: 'E4:E7', note: 'Your formulas go here: one value per assumption, for the case named in `B1`.' },
+        ],
+      },
+      { do: 'Click `B1`, the switch.', done: { kind: 'select', range: 'B1' } },
+      {
+        do: 'Choose **Data › Data Validation**. On the **Settings** tab, set **Allow** to **List**.',
+        why: 'A List rule turns the cell into a dropdown, so nobody can type a case that doesn’t exist.',
+      },
+      {
+        do: 'Click in the **Source** box and type `=$B$3:$D$3`, the scenario names in the header row. Keep **In-cell dropdown** ticked and click **OK**.',
+        why: `An arrow appears beside \`B1\` offering Base, Upside and Downside. Leave it on ${d.scenario} for now.`,
+        done: { kind: 'inspect', inspection: scenarioDropdown('B1 has a dropdown of Base, Upside and Downside') },
+      },
+      {
+        do: `See what \`E4\` should show: the ${ASSUMPTIONS[0].toLowerCase()} for the ${d.scenario} case.`,
+        why: `${d.scenario} is in column \`${col}\`, so \`E4\` should show the value in \`${col}4\`: ${pct(live)}. Your formula finds that column by looking up the name in \`B1\`.`,
+        show: [
+          { label: 'Row 4’s three cases', at: 'B4:D4', note: 'The formula returns one of these: the one under the name that matches `B1`.' },
+          { label: `The ${d.scenario} value`, at: `${col}4`, note: `${pct(live)}: the number your formula in \`E4\` should show.` },
+        ],
+      },
+      typeStep({
+        cell: 'E4',
+        formula: [
+          part('=XLOOKUP(', 'Finds a value in one row and returns the item in the same position from another row.'),
+          part('$B$1', `What to find: the case chosen in \`B1\` (${d.scenario}). The \`$\` signs keep every row reading \`B1\`.`, 'B1'),
+          raw(', '),
+          part('$B$3:$D$3', 'Where to find it: the scenario names in the header row, locked so they stay on row `3` when you fill down.', 'B3:D3'),
+          raw(', '),
+          part('B4:D4', 'What to return from: this assumption’s three values. No `$`, so it moves to rows `5`, `6` and `7` as you fill down.', 'B4:D4'),
+          raw(')'),
+        ],
+        why: 'To add the `$` signs, click inside a reference while typing and press {absKey} until it reads `$B$1`. Because it finds the case by name, moving the columns around or adding a case never breaks it.',
+      }),
+      fillStep({
+        from: 'E4',
+        range: 'E4:E7',
+        direction: 'down',
+        why: '`B4:D4` moves down to each assumption’s own row. `$B$1` and `$B$3:$D$3` stay put.',
+      }),
+      {
+        do: 'Try the switch: pick **Upside** from the dropdown in `B1`.',
+        why: 'Keep an eye on the Live column in `E4:E7` as you pick.',
+        done: { kind: 'inspect', inspection: cellShows('B1', 'Upside', 'the scenario', 'B1 is set to Upside') },
+      },
+      {
+        do: `Pick **${d.scenario}** in \`B1\` again.`,
+        why: `The Live column switched to the Upside values: \`E4\` showed ${pct(d.values.Upside[0])}. Anything that reads the Live column would follow, so one cell reruns the whole model. The coach expects ${d.scenario} when you check.`,
+        done: { kind: 'inspect', inspection: scenarioLeftOn(d) },
+      },
+      checkStep('The coach switches `B1` to Upside and Downside, changes the assumptions and swaps the Upside and Downside columns, to make sure the Live column follows the name in `B1`. Then it puts everything back.'),
+    ];
+  },
   make: (rng) => ({ scenario: 'Base', columns: [...SCENARIOS], values: scenarioTable(rng) }),
   layout: (d) => ({
     blocks: [
@@ -297,6 +384,81 @@ export const modelDriverForecast = defineExercise<ForecastData>({
     'Select `C8:C13` and drag the fill handle right to column `N`, or select `C8:N13` and use Home › Fill › Right. Every month in a row then holds the same formula.',
   ],
   solution: () => 'C8: =B8*(1+$B$2) · C9: =C8*$B$3 · C10: =C9*$B$4 · C11: =C9-C10 · C12: =$B$5 · C13: =C11-C12, then fill C8:C13 right to column N.',
+  guide: (d) => {
+    const dr = d.drivers;
+    const [units, revenue, cogs, gm, opex, ebitda] = driverForecast(d.actual.units, dr);
+    const oct = monthLabel(FORECAST_MONTHS[0]);
+    const last = FORECAST_MONTHS.length - 1;
+    return [
+      {
+        do: 'Meet the layout. The drivers are in `B2:B5`, last month’s actual figures are in `B8:B13`, and the twelve forecast months run across row `7`.',
+        why: 'You’ll only ever change the drivers. Every forecast cell will be a formula that reads them, so the whole year updates when one driver moves. The Last actual column gives October something to grow from, so October’s formula matches every later month’s.',
+        show: [
+          { label: 'Drivers', at: 'B2:B5', note: 'The inputs: growth, price, COGS % and fixed costs.' },
+          { label: 'Last actual', at: 'B8:B13', note: 'September 2026’s real figures. October grows from these.' },
+          { label: 'Forecast area', at: 'C8:N13', note: 'Six lines by twelve months. You’ll write column `C` one line at a time, then fill it right.' },
+        ],
+      },
+      {
+        do: `See what \`C8\` should show: ${oct}’s units.`,
+        why: `Units grow ${pct(dr.growth)} a month, starting from last month’s ${wholeNum(d.actual.units)}. ${wholeNum(d.actual.units)} × (1 + ${pct(dr.growth)}) is ${wholeNum(units[0])}: that’s the number for \`C8\`.`,
+        show: [
+          { label: 'Last actual units', at: 'B8' },
+          { label: 'Growth rate', at: 'B2' },
+        ],
+      },
+      typeStep({
+        cell: 'C8',
+        formula: [
+          raw('='),
+          part('B8', 'Last month’s units, in the cell to the left. When you fill right, this becomes `C8`, `D8` and so on, so each month grows from the one before.', 'B8'),
+          part('*(1+$B$2)', `Times one plus the growth rate in \`B2\` (${pct(dr.growth)}). The \`$\` signs keep every month pointing at \`B2\`.`, 'B2'),
+        ],
+        why: 'To add the `$` signs, click inside `B2` while typing and press {absKey} until it reads `$B$2`.',
+      }),
+      typeStep({
+        cell: 'C9',
+        formula: [
+          raw('='),
+          part('C8', `${oct}’s units, in the cell above.`, 'C8'),
+          part('*', 'Times.'),
+          part('$B$3', `The price per unit in \`B3\` (${money(dr.price)}), locked with \`$\`.`, 'B3'),
+        ],
+        why: `Revenue is units × price. \`C9\` should show ${wholeNum(revenue[0])}.`,
+      }),
+      typeStep({
+        cell: 'C10',
+        formula: [
+          raw('='),
+          part('C9', `${oct}’s revenue.`, 'C9'),
+          part('*', 'Times.'),
+          part('$B$4', `The COGS % in \`B4\` (${pct(dr.cogsPct)}), locked with \`$\`.`, 'B4'),
+        ],
+        why: `COGS, the cost of goods sold, is revenue × COGS %. \`C10\` should show ${wholeNum(cogs[0])}.`,
+      }),
+      typeStep({
+        cell: 'C11',
+        formula: [raw('='), part('C9', 'Revenue…', 'C9'), part('-', '…minus…'), part('C10', '…COGS, both in the same month.', 'C10')],
+        why: `Gross margin is what’s left after COGS. No \`$\` here: both cells move along with the month. \`C11\` should show ${wholeNum(gm[0])}.`,
+      }),
+      typeStep({
+        cell: 'C12',
+        formula: [raw('='), part('$B$5', `The fixed costs in \`B5\` (${dollars(dr.fixed)}). Locked both ways, so every month reads \`B5\`.`, 'B5')],
+        why: `Opex, the operating costs, stays the same every month. \`C12\` should show ${wholeNum(opex[0])}.`,
+      }),
+      typeStep({
+        cell: 'C13',
+        formula: [raw('='), part('C11', 'Gross margin…', 'C11'), part('-', '…minus…'), part('C12', '…Opex, both in the same month.', 'C12')],
+        why: `EBITDA (earnings before interest, tax, depreciation and amortization) is the profit from running the business. \`C13\` should show ${wholeNum(ebitda[0])}.`,
+      }),
+      {
+        do: 'Select `C8:N13` (click `C8`, then Shift-click `N13`) and press {fillRight}.',
+        why: `Fill Right copies column \`C\`’s six formulas across to ${monthLabel(FORECAST_MONTHS[last])}. References without \`$\` move one column each month, so \`B8\` becomes \`C8\` and November grows from October. The \`$\` ones stay on the drivers. \`N13\` should show ${wholeNum(ebitda[last])}.`,
+        done: { kind: 'answer' },
+      },
+      checkStep('The coach changes each driver and the last actual units, to make sure the whole year follows. Then it puts them back.'),
+    ];
+  },
   make: (rng) => {
     const units = drawUnits(rng);
     const drivers = makeDrivers(rng, units);
@@ -430,6 +592,73 @@ export const modelCheckCells = defineExercise<CheckData>({
     'The master check passes only when both differences are 0: `=IF(AND(G13=0, G14=0), "OK", "Check")` in `G15`.',
   ],
   solution: () => 'G13: =H8-H10 · G14: =ROWS(Expenses)-G8 · G15: =IF(AND(G13=0,G14=0),"OK","Check")',
+  guide: (d) => {
+    const rows = d.lines.length;
+    const listed = d.lines.filter((l) => d.departments.includes(l.dept));
+    const summaryTotal = sum(listed.map((l) => l.amount));
+    const [amountGap, rowGap] = checkResults(d);
+    const moved = d.ledger + 100;
+    return [
+      {
+        do: 'Meet the layout. The summary in `F1:H8` counts and adds up the `Expenses` Table by department, and `H10` holds the ledger total from the GL (the general ledger).',
+        why: 'A check cell works out the same figure two independent ways and shows the difference, so it reads 0 while everything ties. You’ll add two checks, then a master check that rolls them into one word.',
+        show: [
+          { label: 'Expenses Table', at: 'Expenses[#Data]', note: `${rows} expense lines, one per row.` },
+          { label: 'Department summary', at: 'F1:H8', note: 'Lines counts each department’s rows with COUNTIFS, and Amount adds them up with SUMIFS. Row `8` totals both.' },
+          { label: 'Ledger total', at: 'H10', note: `${dollars(d.ledger)}: the figure the summary should agree with.` },
+        ],
+      },
+      typeStep({
+        cell: 'G13',
+        formula: [
+          raw('='),
+          part('H8', `The summary’s total amount (${dollars(summaryTotal)}).`, 'H8'),
+          part('-', 'Minus.'),
+          part('H10', `The ledger total from the GL (${dollars(d.ledger)}).`, 'H10'),
+        ],
+        why: `${amountGap === 0 ? `Both are ${dollars(d.ledger)} right now, so \`G13\` shows 0.` : `\`G13\` should show ${wholeNum(amountGap)}.`} If a summary figure is typed over or the ledger moves, it shows the gap instead.`,
+        show: [{ label: 'Both totals', at: 'H8,H10', note: 'The two figures this check compares.' }],
+      }),
+      typeStep({
+        cell: 'G14',
+        formula: [
+          part('=ROWS(', 'Counts the rows in a range or a Table.'),
+          part('Expenses', `The Expenses Table. ROWS counts its data rows, not the header, however many there are: ${rows} right now.`, 'Expenses[#Data]'),
+          raw(')'),
+          part('-', 'Minus.'),
+          part('G8', `The summary’s line count: the total of the Lines column (${listed.length}).`, 'G8'),
+        ],
+        why: `A line coded to a department the summary doesn’t list is missed by COUNTIFS, so \`G8\` falls short and this check shows 1. Right now it shows ${rowGap}.`,
+      }),
+      typeStep({
+        cell: 'G15',
+        formula: [
+          part('=IF(', 'Shows one of two results, depending on a test.'),
+          part('AND(', 'The test. AND is true only when everything inside it is true:'),
+          part('G13=0', 'the amount check is 0…', 'G13'),
+          raw(', '),
+          part('G14=0', '…and the row check is 0.', 'G14'),
+          raw('), '),
+          part('"OK"', 'Shown when both checks are 0.'),
+          raw(', '),
+          part('"Check"', 'Shown when either one isn’t.'),
+          raw(')'),
+        ],
+        why: 'Type the quote marks around OK and Check: they tell Excel these are words, not cell names. `G15` should show OK.',
+      }),
+      {
+        do: `Try it: type \`${moved}\` in \`H10\` and press {enter}.`,
+        why: 'That’s the ledger moving by $100. Keep an eye on `G13` and `G15` as you press {enter}.',
+        done: { kind: 'inspect', inspection: cellShows('H10', moved, 'the ledger total', `H10 holds ${dollars(moved)}`) },
+      },
+      {
+        do: `Put the ledger back: type \`${d.ledger}\` in \`H10\` and press {enter}.`,
+        why: `\`G13\` showed ${wholeNum(amountGap - 100)}, the gap between the summary and the ledger, and \`G15\` switched to Check. With the ledger back, they return to ${wholeNum(amountGap)} and OK.`,
+        done: { kind: 'inspect', inspection: cellShows('H10', d.ledger, 'the ledger total', `H10 holds ${dollars(d.ledger)}`) },
+      },
+      checkStep('The coach changes the amounts, adds lines, knocks the ledger out of line and codes a line to a department the summary doesn’t list. Your checks should read 0 and OK while things tie, and catch each mismatch. Then it puts everything back.'),
+    ];
+  },
   make: (rng) => {
     const departments = rng.sample(DEPARTMENTS, SUMMARY_DEPTS);
     // Two lines per department first, so every summary row has something to count.
@@ -614,6 +843,79 @@ export const modelAuditTrace = defineExercise<AuditData>({
     const p = MONTH_COLS[d.pasted];
     const w = MONTH_COLS[d.wrongLink];
     return `Gross margin in ${p}11 held a typed number: =${p}9-${p}10. COGS in ${w}10 read last year’s COGS %: =${w}9*$B$4.`;
+  },
+  guide: (d) => {
+    const p = MONTH_COLS[d.pasted];
+    const w = MONTH_COLS[d.wrongLink];
+    const pPrev = MONTH_COLS[d.pasted - 1];
+    const wPrev = MONTH_COLS[d.wrongLink - 1];
+    const pMonth = monthLabel(FORECAST_MONTHS[d.pasted]);
+    const wMonth = monthLabel(FORECAST_MONTHS[d.wrongLink]);
+    const holdsFormula = (cell: string, pattern: string, label: string): Inspection => ({
+      kind: 'sheet',
+      check: { kind: 'formulas', range: cell, formulas: true, pattern: new RegExp(`^=\\s*(?:${pattern})\\s*$`, 'i') },
+      label,
+    });
+    const b4 = refPattern('B', 4);
+    const w9 = refPattern(w, 9);
+    return [
+      {
+        do: 'Meet the model. The Forecast drivers are in `B2:B5`, with last year’s beside them in `C2:C5`. The forecast in `C8:N14` should read only the Forecast column.',
+        why: 'Two cells in the forecast are broken. One holds a typed number instead of a formula, and one formula reads last year’s figure. Excel’s tracer arrows will lead you to both.',
+        show: [
+          { label: 'Forecast drivers', at: 'B2:B5', note: 'What every month of the forecast should read.' },
+          { label: 'Last year', at: 'C2:C5', note: 'For comparison only. Nothing in the forecast should read these.' },
+          { label: 'The forecast', at: AUDIT_RANGE, note: 'Units down to EBITDA margin %, October to September.' },
+        ],
+      },
+      {
+        do: `Click \`${p}13\`, EBITDA for ${pMonth}.`,
+        why: 'Start from an output and work back toward the drivers. In your own models, start from whichever output looks off.',
+        done: { kind: 'select', range: `${p}13` },
+      },
+      {
+        do: 'Choose **Formulas › Trace Precedents**.',
+        why: `Precedents are the cells a formula reads. Arrows now point into \`${p}13\` from \`${p}11\` (Gross margin) and \`${p}12\` (Opex): EBITDA is one minus the other.`,
+      },
+      {
+        do: `With \`${p}13\` still selected, choose **Formulas › Trace Precedents** again.`,
+        why: `Each click goes one level further back. \`${p}12\` gets an arrow from \`B5\`, the fixed costs. \`${p}11\` gets none: a calculation with no arrows coming in has no formula.`,
+      },
+      { do: `Click \`${p}11\`, the Gross margin with no arrows coming in.`, done: { kind: 'select', range: `${p}11` } },
+      {
+        do: `Type \`=${p}9-${p}10\` in \`${p}11\` and press {enter}.`,
+        why: `The formula bar shows a plain number with no \`=\` in front: someone pasted the value over the formula. It matches today, but it won’t move when a driver changes. Its neighbours, like \`${pPrev}11\`, read Revenue minus COGS in their own month.`,
+        formula: [raw('='), part(`${p}9`, `Revenue for ${pMonth}…`, `${p}9`), part('-', '…minus…'), part(`${p}10`, `…COGS for ${pMonth}.`, `${p}10`)],
+        show: [{ label: 'A neighbour', at: `${pPrev}11`, note: `\`${pPrev}11\` holds \`=${pPrev}9-${pPrev}10\`. Yours follows the same pattern one column over.` }],
+        done: { kind: 'inspect', inspection: holdsFormula(`${p}11`, `${refPattern(p, 9)}\\s*-\\s*${refPattern(p, 10)}`, `${p}11 holds a Gross margin formula`) },
+      },
+      {
+        do: 'Choose **Formulas › Remove Arrows**.',
+        why: 'That clears the arrows from the first trace. One break is fixed; next, the formula that reads the wrong input.',
+      },
+      {
+        do: 'Click `C4`, last year’s COGS %.',
+        why: 'Nothing in the forecast should read the Last year column. In a real review you’d try each of `C2:C5` in turn.',
+        done: { kind: 'select', range: 'C4' },
+      },
+      {
+        do: 'Choose **Formulas › Trace Dependents**.',
+        why: `Dependents are the cells that read the selected one. An arrow runs from \`C4\` to \`${w}10\`, COGS for ${wMonth}: that formula reads last year’s COGS %.`,
+      },
+      { do: `Click \`${w}10\`, where the arrow ends.`, done: { kind: 'select', range: `${w}10` } },
+      {
+        do: `Type \`=${w}9*$B$4\` in \`${w}10\` and press {enter}.`,
+        why: `The formula bar shows \`=${w}9*$C$4\`: Revenue × last year’s COGS % in \`C4\`. Every other month reads the Forecast COGS % in \`B4\`, like \`${wPrev}10\` does.`,
+        formula: [raw('='), part(`${w}9`, `Revenue for ${wMonth}…`, `${w}9`), part('*', '…times…'), part('$B$4', '…the Forecast COGS % in `B4`, the input every other month reads.', 'B4')],
+        show: [{ label: 'A neighbour', at: `${wPrev}10`, note: `\`${wPrev}10\` holds \`=${wPrev}9*$B$4\`.` }],
+        done: { kind: 'inspect', inspection: holdsFormula(`${w}10`, `${w9}\\s*\\*\\s*${b4}|${b4}\\s*\\*\\s*${w9}`, `${w}10 reads the Forecast COGS %`) },
+      },
+      {
+        do: 'Choose **Formulas › Show Formulas** and scan rows `8` to `14`.',
+        why: 'Every cell now shows its formula instead of its result. Each row should read the same from October to September, with no plain numbers and no `$C$4`. Choose **Show Formulas** again to bring the results back, and **Remove Arrows** to clear the arrows.',
+      },
+      checkStep('The coach changes the Forecast drivers, last year’s figures and the last actual units, to make sure every month follows the Forecast column and nothing reads last year’s. Then it puts them back.'),
+    ];
   },
   make: (rng) => {
     const units = drawUnits(rng);

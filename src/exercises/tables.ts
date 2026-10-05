@@ -2,6 +2,7 @@ import { CARRIERS, ITEMS, WAREHOUSES, serial, skuCode, sum } from '../engine/dat
 import { round, type Rng } from '../engine/rng';
 import type { ColumnSpec } from '../engine/types';
 import { FMT, cells, dataBlock, defineExercise, tableWrite } from './common';
+import { TABLE_TYPING_TIP, checkStep, part, raw, typeStep } from './guides';
 
 // ---------- Turn a range into a Table ----------
 
@@ -58,6 +59,30 @@ export const tablesConvert = defineExercise<{ rows: Shipment[] }>({
     'In I2 type =SUM( and then click the top edge of the Freight header, or type Shipments[Freight] directly.',
   ],
   solution: () => '=SUM(Shipments[Freight])',
+  guide: (d) => [
+    {
+      do: 'Click any cell in the shipment data, for example `B5`.',
+      why: 'Right now this is a plain range: Excel doesn’t know where it starts or ends. Making it a Table fixes that.',
+      done: { kind: 'select', range: 'A1:F41' },
+    },
+    {
+      do: 'Press {tableKey}. In the box that opens, leave **My table has headers** ticked and click **OK**.',
+      why: 'The data turns striped and the header row gets filter buttons. Excel names it Table1 for now.',
+      done: { kind: 'tableAt', at: 'A1' },
+    },
+    {
+      do: 'Click the **{tableTab}** tab on the ribbon. In the **Table Name** box at its left end, replace Table1 with `Shipments` and press {enter}.',
+      why: 'The {tableTab} tab only shows while a cell in the Table is selected. A clear name reads well in formulas: `Shipments[Freight]`.',
+      done: { kind: 'inspect', inspection: { kind: 'tableExists', table: 'Shipments', at: 'A1', rows: d.rows.length + 1, label: 'A Table named Shipments' } },
+    },
+    typeStep({
+      cell: 'I2',
+      formula: [part('=SUM(', 'Adds up everything inside the brackets.'), part('Shipments[Freight]', 'The whole Freight column of your new Table, however many rows it has.', 'Shipments[Freight]'), raw(')')],
+      why: `${TABLE_TYPING_TIP} Or type \`=SUM(\` and drag over \`F2:F41\`: Excel writes \`Shipments[Freight]\` for you.`,
+      whole: true,
+    }),
+    checkStep('The coach adds five shipments to the Table behind the scenes. A total over `F2:F41` would miss them; yours won’t.'),
+  ],
   make: (rng) => ({ rows: Array.from({ length: 40 }, (_, i) => shipment(rng, i)).sort((a, b) => a.date - b.date) }),
   layout: (d) => ({
     blocks: [dataBlock('Shipments', 'A1', SHIP_COLS, shipGrid(d.rows), false), cells('H2', [['Total freight']], 'label')],
@@ -137,6 +162,26 @@ export const tablesCalcColumn = defineExercise<{ rows: OrderLine[] }>({
     'Press {enter} once. The Table fills the formula down by itself.',
   ],
   solution: () => '=[@Qty]*[@[Unit cost]]',
+  guide: () => [
+    {
+      do: 'Click `F1`, type `Line total` and press {enter}.',
+      why: 'Typing right next to a Table stretches it: column `F` turns striped and joins the Table.',
+      done: { kind: 'inspect', inspection: { kind: 'tableColumn', table: 'Orders', column: 'Line total', label: 'The Orders Table has a Line total column' } },
+    },
+    typeStep({
+      cell: 'F2',
+      do: 'In `F2`, type `=`, click `D2`, type `*`, click `E2`, then press {enter}.',
+      formula: [
+        raw('='),
+        part('[@Qty]', 'The Qty on this row. Excel writes this when you click `D2`.', 'D2'),
+        part('*', 'Multiplies.'),
+        part('[@[Unit cost]]', 'The Unit cost on this row. A name with a space gets an extra pair of brackets.', 'E2'),
+      ],
+      why: 'Press {enter} once and the Table copies the formula down the whole column by itself. That’s a calculated column, and new rows get it too.',
+      whole: true,
+    }),
+    checkStep(),
+  ],
   make: (rng) => ({ rows: Array.from({ length: 30 }, (_, i) => orderLine(rng, i)) }),
   layout: (d) => ({
     blocks: [dataBlock('Orders', 'A1', ORDER_COLS, orderGrid(d.rows))],

@@ -2,12 +2,16 @@ import { WAREHOUSES } from '../engine/data';
 import { round, type Rng } from '../engine/rng';
 import type { CellCheck, Exercise } from '../engine/types';
 import { FMT, cells, column, defineExercise, rangeWrite } from './common';
+import { checkStep, money } from './guides';
 
 /** "$1,234.50" for solution text. */
 function usd(n: number): string {
   const s = Math.abs(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
   return `${n < 0 ? '-' : ''}$${s}`;
 }
+
+/** 38% for 0.38: whole percents, for walkthrough copy. */
+const pct0 = (n: number) => `${Math.round(n * 100)}%`;
 
 // ---------- Find the price for a target margin (Goal Seek) ----------
 
@@ -70,6 +74,50 @@ export const goalSeekPrice = defineExercise<GoalSeekData>({
   ],
   solution: (d) =>
     `Data › What-If Analysis › Goal Seek: Set cell B11, To value ${d.target}, By changing cell B5. The price comes out at about ${usd(targetPrice(d))}.`,
+  guide: (d) => {
+    const now = `${(marginAt(d, d.price) * 100).toFixed(1)}%`;
+    return [
+      {
+        do: 'Meet the model. The price in `B5` feeds the formulas in `B8:B11`, and `B11` works out Margin %.',
+        why: `Right now the price is ${money(d.price)} and Margin % shows ${now}. The target in \`B13\` is ${pct0(d.target)}. A higher price means a higher margin, but which price lands on ${pct0(d.target)} exactly? Goal Seek works backward from the target to find it.`,
+        show: [
+          { label: 'Price', at: 'B5', note: 'The input Goal Seek will change.' },
+          { label: 'Margin %', at: 'B11', note: '`B11` holds `=B10/B8`: gross margin divided by revenue. Goal Seek needs a formula cell like this to aim at.' },
+          { label: 'Target', at: 'B13', note: `The margin you want: ${pct0(d.target)}.` },
+        ],
+      },
+      {
+        do: 'Click `B11`, the Margin % cell.',
+        why: 'Goal Seek starts with the selected cell in its first box, which saves a step.',
+        done: { kind: 'select', range: 'B11' },
+      },
+      {
+        do: 'Click **Data › What-If Analysis › Goal Seek**.',
+        why: 'A small box opens with three fields: **Set cell**, **To value** and **By changing cell**.',
+      },
+      {
+        do: 'Check that **Set cell** shows `B11` (Excel may write it as `$B$11`). If it shows another cell, click in the box, then click `B11`.',
+        why: 'Set cell is the formula you want to land on a number: Margin %. It has to be a formula, not a typed number.',
+      },
+      {
+        do: `In **To value**, type \`${d.target}\`.`,
+        why: `That’s the ${pct0(d.target)} target from \`B13\`, written as a decimal. This box takes a typed number, not a cell.`,
+      },
+      {
+        do: 'Click in **By changing cell**, then click `B5`.',
+        why: 'This is the input Goal Seek may change: the price. It tries one price after another until `B11` shows the target.',
+      },
+      {
+        do: 'Click **OK**.',
+        why: `After a moment, a **Goal Seek Status** box says it found a solution. \`B5\` now shows about ${money(targetPrice(d))}, and \`B11\` shows ${pct0(d.target)}.`,
+      },
+      {
+        do: 'In the **Goal Seek Status** box, click **OK** to keep the new price.',
+        why: '**Cancel** would put the old price back. OK leaves the price typed into `B5`, so the model keeps working afterward.',
+      },
+      checkStep('The coach checks that `B5` holds a typed price within two cents of the exact answer, and that `B11` still has its formula and shows the target margin.'),
+    ];
+  },
   make: (rng) => {
     const item = rng.pick(GS_ITEMS);
     const target = rng.pick(GS_TARGETS);
@@ -164,6 +212,59 @@ export const dataTableTwoWay = defineExercise<ProfitData>({
     'Row input cell: B2. Column input cell: B4. Click OK and the grid fills in.',
   ],
   solution: () => 'Select B9:H16 › Data › What-If Analysis › Data Table › Row input cell B2, Column input cell B4. Every result cell shows =TABLE(B2,B4).',
+  guide: (d) => {
+    const units = (n: number) => n.toLocaleString('en-US');
+    const firstCell = profit(d, d.prices[0], d.volumes[0]);
+    return [
+      {
+        do: 'Meet the model. The inputs are in `B2:B5`, and `B6` works out monthly Profit from them.',
+        show: [
+          { label: 'Inputs', at: 'B2:B5', note: 'Price per unit, Unit cost, Units per month and Fixed cost per month.' },
+          {
+            label: 'Profit',
+            at: 'B6',
+            note: `\`B6\` holds \`=(B2-B3)*B4-B5\`: (price − unit cost) × units − fixed cost. Right now it’s ${money(profit(d, d.price, d.units))}.`,
+          },
+        ],
+      },
+      {
+        do: 'Meet the grid. Prices run across `C9:H9`, volumes run down `B10:B16`, and the corner cell `B9` points at Profit.',
+        why: 'A **data table** reruns the model once for every cell of the grid. For each cell it puts that column’s price into `B2` and that row’s volume into `B4`, then records what `B6` would show. The corner tells it which result to record.',
+        show: [
+          { label: 'Prices', at: 'C9:H9', note: 'Each column of the grid tries one of these prices.' },
+          { label: 'Volumes', at: 'B10:B16', note: 'Each row of the grid tries one of these volumes.' },
+          { label: 'Corner', at: 'B9', note: '`B9` holds `=B6`, so the data table records Profit.' },
+        ],
+      },
+      {
+        do: `See what \`C10\` will show: profit at a price of ${money(d.prices[0])} and ${units(d.volumes[0])} units a month.`,
+        why: `(${money(d.prices[0])} − ${money(d.cost)}) × ${units(d.volumes[0])} − ${money(d.fixed)} = ${money(firstCell)}. And \`E13\` will match \`B6\`, because that’s the model’s own price and volume.`,
+        show: [{ label: 'Select its price and volume', at: 'C9,B10', note: '`C9` is the price and `B10` the volume that `C10` stands for.' }],
+      },
+      {
+        do: 'Select `B9:H16`: click `B9`, then Shift-click `H16`.',
+        why: 'Include the corner and both sets of options. The empty cells `C10:H16` are where the results go.',
+      },
+      {
+        do: 'Click **Data › What-If Analysis › Data Table**.',
+        why: 'A small box opens with two fields: **Row input cell** and **Column input cell**.',
+      },
+      {
+        do: 'Click in **Row input cell**, then click `B2`.',
+        why: 'The prices sit in a row across the top, so they stand in for the price cell, `B2`.',
+      },
+      {
+        do: 'Click in **Column input cell**, then click `B4`.',
+        why: 'The volumes sit in a column down the side, so they stand in for the units cell, `B4`.',
+      },
+      {
+        do: 'Click **OK**.',
+        why: `The grid fills in, and \`C10\` shows ${money(firstCell)}. Click any result: the formula bar shows a \`TABLE\` formula pointing at \`B2\` and \`B4\`. You can’t edit one cell of a data table; to redo it, select all of \`C10:H16\` and delete.`,
+        done: { kind: 'answer' },
+      },
+      checkStep('The coach changes Unit cost and Fixed cost behind the scenes. A live data table follows the model; typed numbers wouldn’t.'),
+    ];
+  },
   make: (rng) => {
     const price = rng.int(30, 60);
     const step = rng.pick([1, 2, 2.5]);
@@ -372,6 +473,80 @@ export const solverShipping = defineExercise<ShipPlanData>({
       .filter(Boolean)
       .join(', ');
     return `Data › Solver: Set Objective $B$11, To Min, By Changing $B$6:$D$7. Constraints: $B$8:$D$8 = $B$9:$D$9 and $E$6:$E$7 <= $F$6:$F$7. Make Unconstrained Variables Non-Negative, Simplex LP. Lowest cost ${usd(d.best)} (${routes}).`;
+  },
+  guide: (d) => {
+    // Why trial and error is hard: each store's cheaper warehouse can't cover everything.
+    const fromFirst = d.demand.reduce((s, dj, j) => s + (d.cost[0][j] < d.cost[1][j] ? dj : 0), 0);
+    const totalDemand = d.demand.reduce((s, dj) => s + dj, 0);
+    const over = fromFirst > d.supply[0] ? 0 : 1;
+    const need = over === 0 ? fromFirst : totalDemand - fromFirst;
+    const squeeze = greedyBreaksSupply(d.cost, d.supply, d.demand)
+      ? ` Sending every store its pallets from its cheaper warehouse would need ${need} pallets from ${d.warehouses[over]}, which only has ${d.supply[over]}. That’s why guessing is slow.`
+      : '';
+    return [
+      {
+        do: 'Meet the model. Each yellow cell in `B6:D7` is how many pallets one warehouse sends to one store. They all start at 0.',
+        why: 'Solver will change those six cells, and only those, to make Total cost in `B11` as low as it can.',
+        show: [
+          { label: 'Cost per pallet', at: 'B2:D3', note: 'What one pallet costs on each route: warehouse down the side, store across the top.' },
+          { label: 'Pallets to ship', at: 'B6:D7', note: 'The cells Solver may change.' },
+          { label: 'Total cost', at: 'B11', note: '`B11` holds `=SUMPRODUCT(B2:D3,B6:D7)`: each route’s pallets times its cost, added up.' },
+        ],
+      },
+      {
+        do: 'Meet the limits. Received in row `8` must equal Demand in row `9`, and Shipped in column `E` can’t go over Supply in column `F`.',
+        why: `Limits like these are called **constraints**.${squeeze}`,
+        show: [
+          { label: 'Received and Demand', at: 'B8:D9', note: `${d.stores.map((s, j) => `${s} needs ${d.demand[j]}`).join(', ')} pallets.` },
+          { label: 'Shipped and Supply', at: 'E6:F7', note: `${d.warehouses[0]} has ${d.supply[0]} pallets and ${d.warehouses[1]} has ${d.supply[1]}.` },
+        ],
+      },
+      {
+        do: 'If **Solver** isn’t on the **Data** tab yet, turn it on once: **Tools › Excel Add-ins** on a Mac (**File › Options › Add-ins › Go** on Windows), tick **Solver Add-in** and click **OK**.',
+        why: 'Solver comes with Excel but starts switched off. Once it’s on, it stays on.',
+      },
+      {
+        do: 'Click **Data › Solver**.',
+        why: 'The **Solver Parameters** box opens. On a Mac, Solver can show “No cells were found” a few times while it sets up; click **OK** each time and it carries on.',
+      },
+      {
+        do: 'Click in **Set Objective**, then click `B11`.',
+        why: 'The **objective** is the cell Solver works on: Total cost. Solver writes it as `$B$11`.',
+      },
+      {
+        do: 'Under **To**, choose **Min**.',
+        why: 'You want the lowest total cost, not the highest.',
+      },
+      {
+        do: 'Click in **By Changing Variable Cells**, then select `B6:D7`.',
+        why: 'These are the six yellow cells: the only ones Solver may change. Solver writes them as `$B$6:$D$7`.',
+      },
+      {
+        do: 'Click **Add**. Set **Cell Reference** to `B8:D8`, pick `=` in the middle, set **Constraint** to `B9:D9`, then click **OK**.',
+        why: 'The first constraint: each store receives exactly its demand.',
+      },
+      {
+        do: 'Click **Add** again. Set **Cell Reference** to `E6:E7`, pick `<=` in the middle, set **Constraint** to `F6:F7`, then click **OK**.',
+        why: 'The second constraint: no warehouse ships more pallets than it has.',
+      },
+      {
+        do: 'Make sure **Make Unconstrained Variables Non-Negative** is ticked.',
+        why: 'A pallet count can’t go below 0.',
+      },
+      {
+        do: 'In **Select a Solving Method**, choose **Simplex LP**.',
+        why: 'Simplex LP fits any model that only adds up inputs multiplied by fixed numbers, like this one. It finds the true minimum rather than a good guess.',
+      },
+      {
+        do: 'Click **Solve**.',
+        why: `Solver tries plans until it finds the cheapest one that meets every constraint. Total cost in \`B11\` should come to ${money(d.best)}.`,
+      },
+      {
+        do: 'In the **Solver Results** box, leave **Keep Solver Solution** selected and click **OK**.',
+        why: 'Solver leaves its pallet counts typed into `B6:D7`. Received now matches Demand, and Shipped stays within Supply.',
+      },
+      checkStep('The coach checks that `B6:D7` hold whole pallet counts of 0 or more, the formulas around them are untouched, every store gets its demand, no warehouse goes over supply, and `B11` is the lowest possible cost.'),
+    ];
   },
   make: shippingProblem,
   layout: (d) => ({

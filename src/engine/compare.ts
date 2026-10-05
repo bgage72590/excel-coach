@@ -79,7 +79,7 @@ export function explainError(value: string): string {
     case '#DIV/0!':
       return 'The formula divides by zero or by an empty cell.';
     case '#CALC!':
-      return 'The calculation returned nothing, for example a FILTER with no matches.';
+      return 'Excel couldn’t calculate a result. Common causes: a FILTER with no matches, a whole list where one value belongs, or a LAMBDA that’s never called.';
     default:
       return 'Excel returned an error.';
   }

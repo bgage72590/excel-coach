@@ -2,6 +2,7 @@ import { CARRIERS, VENDORS, eomonth, serial } from '../engine/data';
 import type { Rng } from '../engine/rng';
 import type { AnswerArea, ColumnSpec, Exercise } from '../engine/types';
 import { FMT, cells, column, dataBlock, defineExercise, rangeWrite, tableWrite } from './common';
+import { TABLE_TYPING_TIP, checkStep, fillStep, isoDate, part, raw, typeStep } from './guides';
 
 // ---------- Excel business-day arithmetic ----------
 
@@ -123,6 +124,38 @@ const holidaysRule = {
   advice: 'Pass the whole column, Holidays[Date], as the holidays argument, so holidays added to the Table later count too.',
 };
 
+// ---------- walkthrough helpers ----------
+
+const DAY_NAMES = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'] as const;
+
+/** "Friday 2026-10-02": a date as the sheet shows it, with its weekday. */
+const dayDate = (s: number) => `${DAY_NAMES[((Math.floor(s) % 7) + 7) % 7]} ${isoDate(s)}`;
+
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+/** How many days from `from` to `to`, both included, fall on a Saturday or Sunday. */
+function weekendDays(from: number, to: number): number {
+  let n = 0;
+  for (let s = from; s <= to; s++) if (isWeekend(s)) n++;
+  return n;
+}
+
+/** The names of the weekday holidays dated from `from` to `to`, both included. */
+const holidaysIn = (holidays: readonly Holiday[], from: number, to: number) =>
+  holidays.filter((h) => h.date >= from && h.date <= to && !isWeekend(h.date)).map((h) => h.name);
+
+/** “Thanksgiving and Day after Thanksgiving”. */
+const nameList = (names: readonly string[]) => (names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : (names[0] ?? ''));
+
+/** The Show button for the Holidays Table’s Date column, shared by the business-day walkthroughs. */
+const holidayPointer = (holidays: readonly Holiday[]) => ({
+  label: 'Holiday dates',
+  at: 'Holidays[Date]',
+  note: `That’s \`Holidays[Date]\`: ${holidays.length} company holidays to skip, as well as Saturdays and Sundays.`,
+});
+
+const HOLIDAY_PART = 'Which other days to skip: the whole Date column of the Holidays Table. Point at the column rather than its cells, so a holiday added to the Table later counts too.';
+
 // ---------- Expected receipt date in business days ----------
 
 interface PoLine {
@@ -178,6 +211,64 @@ export const workdayReceipt = defineExercise<ReceiptData>({
     '=WORKDAY(F2, G2, Holidays[Date]), then fill down.',
   ],
   solution: () => '=WORKDAY(F2,G2,Holidays[Date])',
+  guide: (d) => {
+    const end = d.lines.length + 1;
+    const first = d.lines[0];
+    const due = receiptDate(first, d.holidays);
+    const skipped = holidaysIn(d.holidays, first.ordered + 1, due);
+    // A later line whose date moves because of a holiday: the reason the third argument matters.
+    const k = d.lines.findIndex((l, i) => i > 0 && receiptDate(l, d.holidays) !== workday(l.ordered, l.lead));
+    const cross = k > 0 ? d.lines[k] : undefined;
+    const crossRow = k + 2;
+    const sample = cross ? { row: crossRow, line: cross } : { row: end, line: d.lines[d.lines.length - 1] };
+    return [
+      {
+        do: 'Meet the data. Each PO line has an order date in column `F` and a lead time in column `G`. The blue block in columns `A` and `B` is a Table named **Holidays**.',
+        why: 'Lead times are in business days: Monday to Friday, not counting company holidays. In a formula, `Holidays[Date]` means the whole Date column of that Table, and it grows when someone adds a holiday.',
+        show: [
+          { label: 'Order dates', at: `F2:F${end}`, note: 'The day each PO was placed. It doesn’t count as one of the lead days.' },
+          { label: 'Lead days', at: `G2:G${end}`, note: 'How many business days each supplier needs.' },
+          holidayPointer(d.holidays),
+        ],
+      },
+      {
+        do: `See what \`H2\` should show: ${plural(first.lead, 'business day')} after ${dayDate(first.ordered)}.`,
+        why: `Start counting the day after the order and skip Saturdays and Sundays${skipped.length ? `, and ${nameList(skipped)} too` : ''}. Business day ${first.lead} is ${dayDate(due)}: that’s the date your formula in \`H2\` should show.`,
+        show: [
+          { label: 'Row 2’s order', at: 'F2:G2', note: `Ordered ${dayDate(first.ordered)}, with a lead time of ${plural(first.lead, 'business day')}.` },
+          ...(cross
+            ? [
+                {
+                  label: `Row ${crossRow} crosses a holiday`,
+                  at: `F${crossRow}:G${crossRow}`,
+                  note: `Ordered ${dayDate(cross.ordered)} with ${plural(cross.lead, 'lead day')}. Skipping weekends alone lands on ${dayDate(workday(cross.ordered, cross.lead))}. Skipping ${nameList(holidaysIn(d.holidays, cross.ordered + 1, receiptDate(cross, d.holidays)))} as well lands on ${dayDate(receiptDate(cross, d.holidays))}. That’s why the formula needs the holiday list.`,
+                },
+              ]
+            : []),
+        ],
+      },
+      typeStep({
+        cell: 'H2',
+        formula: [
+          part('=WORKDAY(', 'Counts business days forward from a date, skipping Saturdays and Sundays.'),
+          part('F2', `Where to start: this line’s order date (${isoDate(first.ordered)}). The start date itself isn’t counted.`, 'F2'),
+          raw(', '),
+          part('G2', `How many business days to count: this line’s lead time (${first.lead}).`, 'G2'),
+          raw(', '),
+          part('Holidays[Date]', HOLIDAY_PART, 'Holidays[Date]'),
+          raw(')'),
+        ],
+        why: TABLE_TYPING_TIP,
+      }),
+      fillStep({
+        from: 'H2',
+        range: `H2:H${end}`,
+        direction: 'down',
+        why: `\`F2\` and \`G2\` move down to each line’s own order date and lead time. \`Holidays[Date]\` stays on the whole holiday column. Row ${sample.row} should show ${isoDate(receiptDate(sample.line, d.holidays))}.`,
+      }),
+      checkStep('The coach adds a holiday to the Holidays Table, changes the lead times and changes the order dates, to make sure every receipt date follows. Then it puts everything back.'),
+    ];
+  },
   make: (rng) => {
     const holidays = [...HOLIDAYS];
     const dates = holidayDates(holidays);
@@ -314,6 +405,69 @@ export const networkdaysActual = defineExercise<TransitData>({
     '=NETWORKDAYS(F2, G2, Holidays[Date]), then fill down.',
   ],
   solution: () => '=NETWORKDAYS(F2,G2,Holidays[Date])',
+  guide: (d) => {
+    const end = d.ships.length + 1;
+    const first = d.ships[0];
+    const days = businessDays(first, d.holidays);
+    const span = first.delivered - first.ordered + 1;
+    const weekend = weekendDays(first.ordered, first.delivered);
+    const hols = holidaysIn(d.holidays, first.ordered, first.delivered);
+    const weekendText = weekend === 0 ? 'none falls on a weekend' : weekend === 1 ? 'one falls on a weekend' : `${weekend} fall on a weekend`;
+    const holText = hols.length === 0 ? '' : `, and ${nameList(hols)} ${hols.length === 1 ? 'is a holiday' : 'are holidays'}`;
+    // A later shipment whose count drops because of a holiday: the reason the third argument matters.
+    const k = d.ships.findIndex((s, i) => i > 0 && businessDays(s, d.holidays) !== networkdays(s.ordered, s.delivered));
+    const cross = k > 0 ? d.ships[k] : undefined;
+    const crossRow = k + 2;
+    const crossHols = cross ? holidaysIn(d.holidays, cross.ordered, cross.delivered) : [];
+    const sample = cross ? { row: crossRow, ship: cross } : { row: end, ship: d.ships[d.ships.length - 1] };
+    return [
+      {
+        do: 'Meet the data. Each shipment has the date it was ordered in column `F` and the date it was delivered in column `G`. The blue block in columns `A` and `B` is a Table named **Holidays**.',
+        why: 'Business days are Monday to Friday, not counting company holidays. In a formula, `Holidays[Date]` means the whole Date column of that Table, and it grows when someone adds a holiday.',
+        show: [
+          { label: 'Ordered', at: `F2:F${end}`, note: 'The first day of each shipment.' },
+          { label: 'Delivered', at: `G2:G${end}`, note: 'The last day. Some carriers deliver on a Saturday, which doesn’t count as a business day.' },
+          holidayPointer(d.holidays),
+        ],
+      },
+      {
+        do: `See what \`H2\` should show: the business days from ${dayDate(first.ordered)} to ${dayDate(first.delivered)}.`,
+        why: `That’s ${plural(span, 'day')}, counting both the first and the last. Of those, ${weekendText}${holText}, so \`H2\` should show ${days}.`,
+        show: [
+          { label: 'Row 2’s dates', at: 'F2:G2', note: `Ordered ${dayDate(first.ordered)}, delivered ${dayDate(first.delivered)}.` },
+          ...(cross
+            ? [
+                {
+                  label: `Row ${crossRow} crosses a holiday`,
+                  at: `F${crossRow}:G${crossRow}`,
+                  note: `Ordered ${dayDate(cross.ordered)}, delivered ${dayDate(cross.delivered)}. Skipping weekends alone counts ${networkdays(cross.ordered, cross.delivered)}. ${nameList(crossHols)} ${crossHols.length === 1 ? 'is a holiday' : 'are holidays'}, so the answer is ${businessDays(cross, d.holidays)}. That’s why the formula needs the holiday list.`,
+                },
+              ]
+            : []),
+        ],
+      },
+      typeStep({
+        cell: 'H2',
+        formula: [
+          part('=NETWORKDAYS(', 'Counts the business days from one date to another, both included, skipping Saturdays and Sundays.'),
+          part('F2', `The first day: when this shipment was ordered (${isoDate(first.ordered)}).`, 'F2'),
+          raw(', '),
+          part('G2', `The last day: when it was delivered (${isoDate(first.delivered)}).`, 'G2'),
+          raw(', '),
+          part('Holidays[Date]', HOLIDAY_PART, 'Holidays[Date]'),
+          raw(')'),
+        ],
+        why: TABLE_TYPING_TIP,
+      }),
+      fillStep({
+        from: 'H2',
+        range: `H2:H${end}`,
+        direction: 'down',
+        why: `\`F2\` and \`G2\` move down to each shipment’s own dates. \`Holidays[Date]\` stays on the whole holiday column. Row ${sample.row} should show ${businessDays(sample.ship, d.holidays)}.`,
+      }),
+      checkStep('The coach adds a holiday to the Holidays Table and changes the delivery dates, to make sure every count follows. Then it puts everything back.'),
+    ];
+  },
   make: (rng) => {
     const holidays = [...HOLIDAYS];
     const dates = holidayDates(holidays);
@@ -457,6 +611,92 @@ export const eomonthTerms = defineExercise<TermsData>({
     'Due date: =EOMONTH(C2, 0) + $I$1. Days overdue: =MAX(0, $I$2 - E2).',
   ],
   solution: () => 'E2: =EOMONTH(C2,0)+$I$1    F2: =MAX(0,$I$2-E2)',
+  guide: (d) => {
+    const end = d.invoices.length + 1;
+    const first = d.invoices[0];
+    const firstDue = dueDate(first.issued, d.terms);
+    const late = d.report - firstDue;
+    const last = d.invoices[d.invoices.length - 1];
+    const lastGap = d.report - dueDate(last.issued, d.terms);
+    // An invoice dated on the last day of its month, where EOMONTH hands back the date itself.
+    const m = d.invoices.findIndex((inv) => inv.issued === eomonth(inv.issued));
+    const monthEnd = m >= 0 ? d.invoices[m] : undefined;
+    return [
+      {
+        do: 'Meet the layout. Each invoice’s date is in column `C`. `I1` holds the payment terms and `I2` the report date.',
+        why: `Terms of ${d.terms} days after month end mean an invoice dated any day in a month is due ${d.terms} days after that month’s last day. Your formulas will read \`I1\` and \`I2\`, so changing either one updates every row.`,
+        show: [
+          { label: 'Invoice dates', at: `C2:C${end}` },
+          { label: 'Terms', at: 'I1', note: `${d.terms}: the number of days after the end of the invoice’s month.` },
+          { label: 'Report date', at: 'I2', note: `${isoDate(d.report)}: the day the aging report is run. Days overdue count up to this date.` },
+        ],
+      },
+      {
+        do: 'See what `E2` should show: the first invoice’s due date.',
+        why: `\`C2\` is ${isoDate(first.issued)}, so its month ends on ${isoDate(eomonth(first.issued))}. Add the ${d.terms} days in \`I1\` and it’s due ${isoDate(firstDue)}. That’s the date for \`E2\`.`,
+        show: [
+          { label: 'First invoice date', at: 'C2' },
+          ...(monthEnd
+            ? [
+                {
+                  label: 'A month-end invoice',
+                  at: `C${m + 2}`,
+                  note: `Dated ${isoDate(monthEnd.issued)}, the last day of its month. EOMONTH hands back that same date, so it’s due exactly ${d.terms} days later, on ${isoDate(dueDate(monthEnd.issued, d.terms))}.`,
+                },
+              ]
+            : []),
+        ],
+      },
+      typeStep({
+        cell: 'E2',
+        formula: [
+          part('=EOMONTH(', 'Finds the last day of a month.'),
+          part('C2', `Which date’s month: this invoice’s date (${isoDate(first.issued)}).`, 'C2'),
+          raw(', '),
+          part('0', 'How many months to move first: 0 keeps the invoice’s own month. 1 would mean the month after.'),
+          raw(')'),
+          part(' + ', 'Plus: adding a number to a date moves it that many days later.'),
+          part('$I$1', `The terms in \`I1\` (${d.terms} days). The \`$\` signs lock it, so every row still reads \`I1\` after you fill down.`, 'I1'),
+        ],
+        why: 'To add the `$` signs, click inside `I1` while typing and press {absKey} until it reads `$I$1`.',
+      }),
+      {
+        do: 'See what `F2` should show: how many days overdue the first invoice is on the report date.',
+        why: `${
+          late > 0
+            ? `The report date in \`I2\`, ${isoDate(d.report)}, is ${plural(late, 'day')} after the due date, so \`F2\` should show ${late}.`
+            : `The report date in \`I2\`, ${isoDate(d.report)}, isn’t past the due date yet, so \`F2\` should show 0.`
+        }${
+          lastGap < 0
+            ? ` The last invoice, on row ${end}, isn’t due until ${isoDate(dueDate(last.issued, d.terms))}. Report date minus due date is ${lastGap} there, a negative number, so that row should show 0 instead.`
+            : ''
+        }`,
+        show: [
+          { label: 'Report date', at: 'I2' },
+          { label: 'First due date', at: 'E2' },
+        ],
+      },
+      typeStep({
+        cell: 'F2',
+        formula: [
+          part('=MAX(', 'Returns the larger of the two values inside.'),
+          part('0', 'The floor: an invoice that isn’t due yet shows 0, not a negative number of days.'),
+          raw(', '),
+          part('$I$2', `The report date in \`I2\` (${isoDate(d.report)}), locked with \`$\` so every row reads it.`, 'I2'),
+          part(' - ', 'Minus: one date minus another gives the number of days between them.'),
+          part('E2', 'This invoice’s due date, the one you worked out in `E2`.', 'E2'),
+          raw(')'),
+        ],
+        why: 'Lock `I2` the same way: click inside it while typing and press {absKey} until it reads `$I$2`.',
+      }),
+      {
+        do: `Select \`E2:F${end}\` (click \`E2\`, then Shift-click \`F${end}\`) and press {fillDown}.`,
+        why: 'Fill Down copies the top formula of each column into the cells below it. `C2` and `E2` move down a row at a time, while `$I$1` and `$I$2` stay on the inputs.',
+        done: { kind: 'answer' },
+      },
+      checkStep('The coach changes the terms in `I1` and the report date in `I2` to make sure every due date and overdue count follows. Then it puts them back.'),
+    ];
+  },
   make: (rng) => ({ invoices: invoices(rng), terms: rng.pick(TERMS), report: rng.pick(REPORT_DATES) }),
   layout: (d) => {
     const end = d.invoices.length + 1;

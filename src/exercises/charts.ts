@@ -1,7 +1,9 @@
-import { CARRIERS, CATEGORIES, ITEMS, WAREHOUSES, serial, skuCode } from '../engine/data';
+import { CARRIERS, CATEGORIES, ITEMS, WAREHOUSES, serial, skuCode, sum } from '../engine/data';
 import { round, type Rng } from '../engine/rng';
 import type { ColumnSpec, Exercise } from '../engine/types';
 import { FMT, dataBlock, defineExercise } from './common';
+import { checkStep, money } from './guides';
+import { clickTableStep, dragStep, insertPivotStep } from './pivots';
 
 /** Whole dollars, for monthly revenue. */
 const USD0 = '$#,##0';
@@ -51,6 +53,38 @@ export const comboChart = defineExercise<{ rows: MonthRow[] }>({
   ],
   solution: () =>
     'Click in the data › Insert › Combo Chart › Clustered Column – Line on Secondary Axis (Revenue as columns, Margin % as a line on the secondary axis) › type a title such as “Revenue and margin by month”.',
+  guide: (d) => {
+    const revenue = d.rows.map((r) => r.revenue);
+    const margin = d.rows.map((r) => r.margin);
+    const usd0 = (n: number) => `$${n.toLocaleString('en-US')}`;
+    const pct1 = (n: number) => `${(n * 100).toFixed(1)}%`;
+    return [
+      {
+        do: 'Meet the data. The Table named **Monthly** holds twelve months of Revenue (column `B`) and Margin % (column `C`).',
+        why: `Revenue runs from ${usd0(Math.min(...revenue))} to ${usd0(Math.max(...revenue))}, while Margin % stays between ${pct1(Math.min(...margin))} and ${pct1(Math.max(...margin))}. On one shared axis the margin line would lie flat along the bottom. A **secondary axis**, a second scale on the right side of the chart, gives it room to move.`,
+        show: [
+          { label: 'Revenue column', at: 'Monthly[Revenue]', note: 'Dollars in the hundreds of thousands: these become the columns.' },
+          { label: 'Margin % column', at: 'Monthly[Margin %]', note: 'Percentages under 100%: this becomes the line on the secondary axis.' },
+        ],
+      },
+      {
+        do: 'Click any cell in the **Monthly** Table, for example `B5`.',
+        why: 'Excel then picks up all three columns for the chart: months along the bottom, and Revenue and Margin % as its two **series** (the sets of numbers the chart draws).',
+        done: { kind: 'select', range: `A1:C${d.rows.length + 1}` },
+      },
+      {
+        do: 'Click **Insert › Combo Chart** (the icon with columns and a line), then **Clustered Column – Line on Secondary Axis**.',
+        why: 'Revenue becomes columns read against the left axis, and Margin % becomes a line read against a new axis on the right. The legend under the chart shows which is which: Margin % should be the line. If you already made another kind of chart, select it and use **Chart Design › Change Chart Type › Combo** instead.',
+        done: { kind: 'inspect', inspection: { kind: 'chart', label: 'A combo chart with a secondary-axis line', minSeries: 2, secondaryLine: true } },
+      },
+      {
+        do: 'Click the **Chart Title** placeholder at the top of the chart, type a title that says what it shows, such as `Revenue and margin by month`, and press {enter}.',
+        why: 'If your words land beside the words “Chart Title” instead of replacing them, delete the leftovers. No placeholder? Use **Chart Design › Add Chart Element › Chart Title** first.',
+        done: { kind: 'inspect', inspection: { kind: 'chart', label: 'A chart on the practice sheet', minSeries: 2, secondaryLine: true, title: true } },
+      },
+      checkStep('The coach looks for a chart on this sheet with at least two series, one of them a line on the secondary axis, and a title other than “Chart Title”.'),
+    ];
+  },
   make: (rng) => ({ rows: monthlyResults(rng) }),
   layout: (d) => ({
     blocks: [dataBlock('Monthly', 'A1', MONTH_COLS, d.rows.map((r) => [r.month, r.revenue, r.margin]))],
@@ -122,6 +156,47 @@ export const slicerDashboard = defineExercise<{ rows: StockRow[] }>({
     'Click inside the PivotTable, then PivotTable Analyze › Insert Slicer, tick Warehouse and click OK.',
   ],
   solution: () => 'Insert › PivotTable from Inventory · Rows: Category · Values: Sum of Value · PivotTable Analyze › Insert Slicer › Warehouse',
+  guide: (d) => {
+    // PivotTables and slicers list items A to Z, so these are the top row and the first button.
+    const category = [...new Set(d.rows.map((r) => r.category))].sort()[0];
+    const warehouse = [...new Set(d.rows.map((r) => r.warehouse))].sort()[0];
+    const categoryValue = sum(d.rows.filter((r) => r.category === category).map((r) => r.value));
+    const warehouseValue = sum(d.rows.filter((r) => r.warehouse === warehouse).map((r) => r.value));
+    return [
+      {
+        do: 'Meet the data. The Table in columns `A` to `G` is named **Inventory**: one row per stock line, with its category, warehouse and value.',
+        why: 'The PivotTable will total Value for each Category. The slicer will be a panel of Warehouse buttons that filters it with one click.',
+        show: [
+          { label: 'Category column', at: 'Inventory[Category]', note: 'Each category will get its own row in the PivotTable.' },
+          { label: 'Value column', at: 'Inventory[Value]', note: 'The numbers the PivotTable adds up.' },
+          { label: 'Warehouse column', at: 'Inventory[Warehouse]', note: 'The slicer will show one button for each warehouse here.' },
+        ],
+      },
+      clickTableStep('Inventory', `A1:G${d.rows.length + 1}`, 'C5'),
+      insertPivotStep('Inventory'),
+      dragStep('Category', 'Rows', 'The category names appear down the left of the PivotTable, one row each.'),
+      dragStep(
+        'Value',
+        'Values',
+        `The field should read **Sum of Value**. ${category}’s row should come to ${money(categoryValue)} (the PivotTable may show it without the $ sign).`,
+        { kind: 'pivot', rows: 'Category', valuesField: 'Value', summarizeBy: 'Sum', showAs: 'None', label: 'PivotTable layout' },
+      ),
+      {
+        do: 'With a cell in the PivotTable selected, click **PivotTable Analyze › Insert Slicer**.',
+        why: 'The **PivotTable Analyze** tab only shows while a cell in the PivotTable is selected. A box opens listing every field.',
+      },
+      {
+        do: 'Tick **Warehouse** and click **OK**.',
+        why: 'A panel of warehouse buttons appears on the sheet. Drag it beside the PivotTable if it covers the numbers.',
+        done: { kind: 'inspect', inspection: { kind: 'slicer', field: 'Warehouse', label: 'A slicer for Warehouse' } },
+      },
+      {
+        do: `Try it: click **${warehouse}** on the slicer.`,
+        why: `The PivotTable now counts only ${warehouse}’s stock, and its **Grand Total** drops to ${money(warehouseValue)}. Click the **Clear Filter** button in the slicer’s corner to bring every warehouse back.`,
+      },
+      checkStep('The coach finds your PivotTable on any sheet and reads its layout: Category alone in Rows, Sum of Value in Values, nothing in Columns, plus a Warehouse slicer.'),
+    ];
+  },
   make: (rng) => ({ rows: inventory(rng) }),
   layout: (d) => ({
     blocks: [dataBlock('Inventory', 'A1', STOCK_COLS, d.rows.map((r) => [r.sku, r.item, r.category, r.warehouse, r.onHand, r.cost, r.value]))],
@@ -186,6 +261,59 @@ export const pivotAverageFilter = defineExercise<{ rows: Shipment[] }>({
     'Values starts as Sum of Days late. Right-click any number in the PivotTable › Summarize Values By › Average, or open the field’s settings from the Values box (the i button on a Mac, Value Field Settings on Windows).',
   ],
   solution: () => 'Insert › PivotTable from Dispatch · Rows: Carrier · Values: Days late, Summarize Values By › Average · Filters: Warehouse',
+  guide: (d) => {
+    // PivotTables list row labels A to Z, so this carrier is the top row.
+    const carrier = [...new Set(d.rows.map((r) => r.carrier))].sort()[0];
+    const late = d.rows.filter((r) => r.carrier === carrier).map((r) => r.late);
+    const total = sum(late);
+    const average = (total / late.length).toFixed(2);
+    return [
+      {
+        do: 'Meet the data. The Table in columns `A` to `E` is named **Dispatch**: one row per delivery, with its carrier, warehouse and how many days late it arrived.',
+        why: 'Early deliveries count as negative days late, so they pull a carrier’s average down.',
+        show: [
+          { label: 'Carrier column', at: 'Dispatch[Carrier]', note: 'Each carrier will get its own row in the PivotTable.' },
+          { label: 'Days late column', at: 'Dispatch[Days late]', note: 'The numbers the PivotTable will average.' },
+          { label: 'Warehouse column', at: 'Dispatch[Warehouse]', note: 'This becomes the filter: one warehouse at a time.' },
+        ],
+      },
+      clickTableStep('Dispatch', `A1:E${d.rows.length + 1}`, 'C5'),
+      insertPivotStep('Dispatch'),
+      dragStep('Carrier', 'Rows', 'The carrier names appear down the left of the PivotTable, one row each.'),
+      dragStep(
+        'Days late',
+        'Values',
+        `It starts as **Sum of Days late**: ${carrier}’s row reads ${total}. A total of days says little about a carrier. An average says how late a typical delivery is, and you’ll switch to it in a moment.`,
+      ),
+      dragStep(
+        'Warehouse',
+        'Filters',
+        'A **Warehouse** drop-down appears above the PivotTable, set to (All). It limits the whole PivotTable to the warehouses you pick.',
+        { kind: 'pivot', rows: 'Carrier', valuesField: 'Days late', summarizeBy: 'Sum', showAs: 'None', filter: 'Warehouse', label: 'Carrier, Sum of Days late and the Warehouse filter are in place' },
+      ),
+      {
+        do: 'Right-click any number in the PivotTable, then choose **Summarize Values By › Average**.',
+        why: `The field becomes **Average of Days late**, and ${carrier}’s row should read about ${average}. Another way in: open the field’s settings from the **Values** box (the **i** button on a Mac, **Value Field Settings** on Windows).`,
+        done: {
+          kind: 'inspect',
+          inspection: {
+            kind: 'pivot',
+            rows: 'Carrier',
+            valuesField: 'Days late',
+            summarizeBy: 'Average',
+            showAs: 'None',
+            filter: 'Warehouse',
+            label: 'PivotTable layout',
+          },
+        },
+      },
+      {
+        do: 'Try the filter: use the **Warehouse** drop-down above the PivotTable to pick one warehouse.',
+        why: 'Every average now counts only that warehouse’s deliveries. Set it back to all warehouses the same way when you’re done looking.',
+      },
+      checkStep('The coach finds your PivotTable on any sheet and reads its layout: Carrier alone in Rows, Average of Days late in Values, Warehouse in Filters and nothing in Columns.'),
+    ];
+  },
   make: (rng) => ({ rows: shipments(rng) }),
   layout: (d) => ({
     blocks: [dataBlock('Dispatch', 'A1', SHIP_COLS, d.rows.map((r) => [r.id, r.date, r.carrier, r.warehouse, r.late]))],

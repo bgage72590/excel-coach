@@ -1,7 +1,8 @@
 import { ITEMS, VENDORS, WAREHOUSES, serial, skuCode, sum } from '../engine/data';
 import { round, type Rng } from '../engine/rng';
-import type { CellMatcher, Exercise, Grid, Inspection, Layout, SheetCheck } from '../engine/types';
+import type { CellMatcher, Exercise, GuideStep, Grid, Inspection, Layout, SheetCheck, StepDone } from '../engine/types';
 import { cells, defineExercise } from './common';
+import { checkStep, isoDate, money, part, raw } from './guides';
 
 /**
  * The add-in can't read VBA, so these exercises grade what the macro leaves behind with 'sheet'
@@ -38,6 +39,32 @@ export const MIN_DESC_WIDTH = 140;
 
 /** A 'sheet' inspection. */
 const sheetCheck = (check: SheetCheck, label: string, advice?: string): Inspection => ({ kind: 'sheet', check, label, advice });
+
+/**
+ * A walkthrough step that ticks off when one of the exercise's own sheet inspections passes: the one
+ * of `kind`, on `range` when two share a kind.
+ */
+function whenPasses(list: Inspection[], kind: SheetCheck['kind'], range?: string): StepDone {
+  const hit = list.find((i) => i.kind === 'sheet' && i.check.kind === kind && (range === undefined || ('range' in i.check && i.check.range === range)));
+  if (!hit) throw new Error(`No ${kind} inspection${range ? ` on ${range}` : ''}`);
+  return { kind: 'inspect', inspection: hit };
+}
+
+/** Whole data rows `A` to `F` for the given sheet rows, runs merged: [2, 3, 9] gives "A2:F3,A9:F9". */
+function rowBands(rows: number[]): string {
+  const sorted = [...new Set(rows)].sort((a, b) => a - b);
+  const out: string[] = [];
+  for (let i = 0; i < sorted.length; ) {
+    let j = i;
+    while (j + 1 < sorted.length && sorted[j + 1] === sorted[j] + 1) j++;
+    out.push(`A${sorted[i]}:F${sorted[j]}`);
+    i = j + 1;
+  }
+  return out.join(',');
+}
+
+/** Where a recorded or saved macro lives in the editor, for the walkthroughs. */
+const OPEN_MODULE = 'Open {vbaEditor}. In the project list on the left, open {personalProject}, then **Modules**, and double-click the module inside it.';
 
 // ---------- the weekly order report ----------
 
@@ -184,6 +211,101 @@ export const macroRecordFormat = defineExercise<WeeklyData>({
     'On the next rep, run it with {runMacro}, select FormatWeekly, then Run. For quicker access, turn on the Developer tab in {developerTab}. If Excel stops at an AutoFilter line with error 1004, open {vbaEditor} and add Field:=1 to the end of that line.',
   ],
   solution: () => FORMAT_VBA,
+  guide: (d): GuideStep[] => {
+    const last = lastDataRow(d);
+    const checks: Inspection[] = macroRecordFormat.inspections!(d);
+    const firstDate = d.rows[0].date;
+    return [
+      {
+        do: `Meet the report: ${d.rows.length} orders from one week, with no formatting yet. You’ll format it once with the macro recorder running, so next week it’s one command.`,
+        why: 'Next week’s report won’t have the same number of rows. So every step below selects whole rows and columns by clicking their headings (the letters along the top and the numbers down the left edge). A step recorded on a whole column covers any number of rows.',
+        show: [
+          { label: 'Header row', at: 'A1:G1', note: 'Row `1`. It’ll be bold with a fill color.' },
+          { label: 'Dates', at: `A2:A${last}`, note: `Dates show as plain numbers, like ${firstDate}, until they get a date format.` },
+          { label: 'Sales and Cost', at: `F2:G${last}`, note: 'Plain numbers for now. They’ll show as currency.' },
+          { label: 'Description', at: `D1:D${last}`, note: 'Column `D` is too narrow to read. AutoFit will widen it.' },
+        ],
+      },
+      {
+        do: 'Start the recorder: choose **{recordMacro}**.',
+        why: 'The **Record Macro** box opens. From the moment you click OK until you stop it, Excel writes each thing you do as a line of VBA code, so take the steps one at a time. If you’ve turned on the Developer tab ({developerTab}), **Developer › Record Macro** opens the same box.',
+      },
+      {
+        do: 'In **Macro name**, type `FormatWeekly`.',
+        why: 'A macro name can’t contain spaces. Leave **Shortcut key** empty.',
+      },
+      {
+        do: 'Set **Store macro in** to **Personal Macro Workbook**, then click **OK**.',
+        why: 'The Personal Macro Workbook is a hidden workbook that opens with Excel, so a macro stored there runs on any workbook, including next week’s report. When you quit Excel and it asks about saving it, choose **Save**. The recorder is now running.',
+      },
+      {
+        do: 'Click the row `1` heading (the 1 at the left edge of the sheet), then click **Bold** on the **Home** tab.',
+        why: 'Clicking the heading selects the whole row, so the step covers the header however many columns it has.',
+        done: whenPasses(checks, 'bold'),
+      },
+      {
+        do: 'With row `1` still selected, click the arrow beside **Fill Color** (the paint bucket) on the **Home** tab and pick a light color.',
+        why: 'Any color but white counts. A light one keeps the header text readable.',
+        done: whenPasses(checks, 'filled'),
+      },
+      {
+        do: 'Click the column `A` heading. In the number format box on the **Home** tab (it shows **General**), choose **Short Date**.',
+        why: `Excel stores a date as a serial number: ${firstDate} is ${isoDate(firstDate)}. A date format changes only how it looks. Formatting all of column \`A\` covers every row, however long next week’s report is.`,
+        done: whenPasses(checks, 'numberFormat', `A2:A${last}`),
+      },
+      {
+        do: 'Click the column `F` heading, then Shift-click the `G` heading so both columns are selected. In the same number format box, choose **Currency**.',
+        why: 'The recorder writes `Columns("F:G").Select`, then sets the format on the selection. That reaches every row, however long next week’s report is.',
+        done: whenPasses(checks, 'numberFormat', `F2:G${last}`),
+      },
+      {
+        do: 'Click the column `A` heading, then Shift-click the `G` heading. Double-click the border between any two of the selected column letters, for example between `D` and `E`.',
+        why: 'That’s AutoFit: every selected column widens or narrows to fit its longest entry. Doing it after the number formats means the widths fit the dates and dollar amounts as they now look.',
+        done: whenPasses(checks, 'minWidth'),
+      },
+      {
+        do: 'Click `A1`. Then on the **View** tab, choose **Freeze Top Row** (it may sit inside the **Freeze Panes** menu).',
+        why: 'Freeze Top Row freezes row `1` alone in one step, so the headings stay in view as you scroll down the orders. Clicking `A1` first drops the column selection, so the filter in the next step covers the whole report.',
+        done: whenPasses(checks, 'freeze'),
+      },
+      {
+        do: 'Choose **Data › Filter**.',
+        why: 'Filter buttons appear on each heading. **Filter** switches them on and off, so choose it once.',
+        done: whenPasses(checks, 'filter'),
+      },
+      {
+        do: 'Stop the recorder. The menu you started it from now offers **Stop Recording**; the small square **Stop** button in the status bar, at the bottom of the Excel window, does the same.',
+        why: 'FormatWeekly is saved. The formatting you did while recording stays on this sheet, and that’s what the coach checks.',
+      },
+      {
+        do: OPEN_MODULE,
+        why: 'That’s where the recorder put FormatWeekly. Yours is longer than the tidied version above: the recorder writes a `.Select` line before most steps and lists settings you didn’t change. Each tidied line matches something you did.',
+        formula: [
+          part('Sub FormatWeekly()\n', 'The macro starts here, under the name you gave it.'),
+          part('    With Range("A1").CurrentRegion.Rows(1)\n', 'The header row: the first row of the block of data around `A1`. The lines up to `End With` apply to it.', 'A1:G1'),
+          part('        .Font.Bold = True\n', 'Bold, as you clicked.'),
+          part('        .Interior.Color = RGB(221, 235, 247)\n', 'The fill color, as amounts of red, green and blue. Yours holds the color you picked.'),
+          raw('    End With\n'),
+          part('    Columns("A").NumberFormat = "yyyy-mm-dd"\n', 'A date format on all of column `A`, however many rows there are.', `A2:A${last}`),
+          part('    Columns("F:G").NumberFormat = "$#,##0.00"\n', 'Currency on all of columns `F` and `G`.', `F2:G${last}`),
+          part('    Range("A1").CurrentRegion.Columns.AutoFit\n', 'AutoFit for every column of the report, after the formats.', `A1:G${last}`),
+          part('    ActiveWindow.FreezePanes = False\n', 'This line and the five under it freeze row `1` alone: clear any old freeze, scroll to the top, split below row 1, then freeze. Yours may look different and do the same job.'),
+          raw('    ActiveWindow.ScrollRow = 1\n    ActiveWindow.ScrollColumn = 1\n    ActiveWindow.SplitColumn = 0\n    ActiveWindow.SplitRow = 1\n    ActiveWindow.FreezePanes = True\n'),
+          part('    If Not ActiveSheet.AutoFilterMode Then\n', 'Only when the filter buttons are off. AutoFilter switches them on and off, so a second run would turn them off again.'),
+          part('        Range("A1").CurrentRegion.AutoFilter Field:=1\n', 'Turns the filter buttons on. `Field:=1` with no criteria (nothing to filter by) shows every row. Excel for Mac needs a field here.', 'A1:G1'),
+          raw('    End If\n'),
+          part('End Sub', 'The macro ends here.'),
+        ],
+      },
+      {
+        do: 'In your code, find the line that ends with the word `AutoFilter`. Click at its end and type a space, then `Field:=1`.',
+        why: 'Run on Excel for Mac, a bare `AutoFilter` line stops the macro with error 1004. With `Field:=1` and no criteria it shows every row, on Mac and Windows alike. If the line already has something after `AutoFilter`, leave it. Then switch back to the workbook.',
+      },
+      checkStep(
+        'The coach reads the formatting on this sheet. On the next rep the report has a different number of rows: run FormatWeekly with **{runMacro}**, select **FormatWeekly**, then click **Run**, instead of formatting by hand.',
+      ),
+    ];
+  },
   make: weeklyReport,
   layout: weeklyLayout,
   expected: () => [],
@@ -278,6 +400,69 @@ export const macroAnyRows = defineExercise<WeeklyData>({
     'Bold it with Range(Cells(lastRow + 1, 1), Cells(lastRow + 1, 7)).Font.Bold = True. Run the macro with {runMacro} here, then again on the next rep: the Total row should land right under the data both times.',
   ],
   solution: () => ANY_ROWS_VBA,
+  guide: (d): GuideStep[] => {
+    const last = lastDataRow(d);
+    const t = totalRow(d);
+    const [sales, cost] = weeklyTotals(d);
+    const checks: Inspection[] = macroAnyRows.inspections!(d);
+    return [
+      {
+        do: `Meet the report: ${d.rows.length} orders, so the last one is on row ${last} and the Total row belongs in row ${t}.`,
+        why: `A recorded macro would write its Total row to row ${t} every time. Next week’s report has a different number of rows, so the macro has to find the last row each time it runs.`,
+        show: [
+          { label: 'Last order', at: `A${last}:G${last}`, note: `Row ${last}: the last row with data.` },
+          { label: 'Where the Total row goes', at: `A${t}:G${t}`, note: `Row ${t} is empty now. The macro will write the Total row here.` },
+        ],
+      },
+      {
+        do: OPEN_MODULE,
+        why: 'You’re adding to FormatWeekly, the macro from the Record a macro skill, so one command formats the report and adds its Total row. No FormatWeekly yet? Select this workbook’s project, choose **Insert › Module**, type `Sub FormatWeekly()` and press {enter}; the editor adds `End Sub` under it.',
+      },
+      {
+        do: 'Click at the end of the `Sub FormatWeekly()` line, press {enter}, and type these four lines.',
+        formula: [
+          part('    Dim lastRow As Long, totalRow As Long\n', 'Makes two variables: named boxes that hold a number while the macro runs. `Long` is a whole number big enough for any row.'),
+          part(
+            '    lastRow = Cells(Rows.Count, 1).End(xlUp).Row\n',
+            `Finds the last order. It starts at the very bottom of column \`A\` (\`Rows.Count\` is the sheet’s last row) and jumps up to the last filled cell, as {jumpUp} does. On this report that’s row ${last}.`,
+            `A${last}`,
+          ),
+          part('    If Cells(lastRow, 1).Value = "Total" Then Exit Sub\n', 'Stops if the report already has its Total row, so running the macro twice doesn’t add a second one or switch the filter buttons back off.'),
+          part('    totalRow = lastRow + 1', `The row right under the last order: row ${t} here, and wherever it lands next week.`, `A${t}:G${t}`),
+        ],
+        why: 'Nothing on the sheet changes yet. These lines only work out where the Total row goes.',
+      },
+      {
+        do: 'Click at the end of the last line above `End Sub`, press {enter}, and type these three lines.',
+        formula: [
+          part('    Cells(totalRow, 1).Value = "Total"\n', '`Cells(row, column)` counts columns as numbers, so column 1 is `A`. This writes “Total” there.', `A${t}`),
+          part(
+            '    Cells(totalRow, 6).Formula = "=SUM(F2:F" & lastRow & ")"\n',
+            `Writes a SUM formula in column 6, \`F\`. \`&\` joins the text to the number in lastRow, so on this report it writes \`=SUM(F2:F${last})\`.`,
+            `F2:F${last}`,
+          ),
+          part('    Cells(totalRow, 7).Formula = "=SUM(G2:G" & lastRow & ")"', `The same for column 7, \`G\`: \`=SUM(G2:G${last})\` here.`, `G2:G${last}`),
+        ],
+        why: 'Building each range from lastRow is what makes it fit any report. A recorded AutoSum adds a fixed number of rows above it instead.',
+      },
+      {
+        do: 'Under those, type these two lines.',
+        formula: [
+          part('    Range(Cells(totalRow, 1), Cells(totalRow, 7)).Font.Bold = True\n', `Bolds the Total row from column 1 to column 7: \`A${t}:G${t}\` on this report.`, `A${t}:G${t}`),
+          part('    Range("A1").CurrentRegion.Columns.AutoFit', 'Fits the column widths again now that the totals are there, so none shows as ####.', `A1:G${t}`),
+        ],
+        why: 'If your recorded code has an AutoFit line higher up, leave it. This one runs last.',
+      },
+      {
+        do: 'Switch back to the workbook and click any cell on the practice sheet. Choose **{runMacro}**, select **FormatWeekly** and click **Run**.',
+        why: `The report gets its formatting and a Total row in row ${t}: ${money(sales)} in \`F${t}\` and ${money(cost)} in \`G${t}\`. If Excel stops with an error, the editor highlights the line it stopped on; compare it with the cards. If it stops at an AutoFilter line with error 1004, add \`Field:=1\` to the end of that line.`,
+        done: whenPasses(checks, 'values', `F${t}:G${t}`),
+      },
+      checkStep(
+        `The coach checks for “Total” in \`A${t}\`, SUM formulas in \`F${t}:G${t}\` that add up every order, and a bold row. On the next rep, run FormatWeekly again: the report will have a different number of rows, and the Total row should still land right under the last one.`,
+      ),
+    ];
+  },
   make: weeklyReport,
   layout: weeklyLayout,
   expected: () => [],
@@ -402,6 +587,78 @@ export const macroHighlightRows = defineExercise<ReorderData>({
     'Run it with {runMacro}. If an earlier version filled the wrong rows, clear those fills first with Home › Fill Color › No Fill, or clear every data row in the macro before the loop, as in the tip.',
   ],
   solution: () => HIGHLIGHT_VBA,
+  guide: (d): GuideStep[] => {
+    const last = d.rows.length + 1;
+    const low = lowRows(d);
+    const atIndex = d.rows.findIndex((r) => r.onHand === r.reorder);
+    const at = d.rows[atIndex];
+    const atRow = atIndex + 2;
+    const checks: Inspection[] = macroHighlightRows.inspections!(d);
+    return [
+      {
+        do: `Meet the stock list: ${d.rows.length} SKUs, with On hand in column \`D\` and Reorder point in column \`E\`.`,
+        why: `A row needs reordering when On hand is below its reorder point. On this list that’s ${low.length} rows. The next list has a different number of rows, so the macro finds the last row by itself.`,
+        show: [
+          { label: 'Rows to fill', at: rowBands(low), note: `These ${low.length} rows are below their reorder point. The macro should fill each one across \`A\` to \`F\`.` },
+          { label: `Row ${atRow}`, at: `A${atRow}:F${atRow}`, note: `${at.onHand} on hand with a reorder point of ${at.reorder}: exactly at it, not below, so it stays unfilled.` },
+          { label: 'On hand', at: `D2:D${last}` },
+          { label: 'Reorder point', at: `E2:E${last}` },
+        ],
+      },
+      {
+        do: 'Open {vbaEditor}. In the project list on the left, select {personalProject}, then choose **Insert › Module**.',
+        why: 'A new, empty code window opens. If {personalProject} isn’t listed, that workbook doesn’t exist yet: record any short macro into it first, or select this workbook’s project instead.',
+      },
+      {
+        do: 'In the new window, type `Sub HighlightReorders()` and press {enter}.',
+        why: 'The editor adds `End Sub` under it and leaves the cursor on the empty line between them. The rest of the macro goes there.',
+      },
+      {
+        do: 'Type these two lines.',
+        formula: [
+          part('    Dim lastRow As Long, r As Long\n', 'Two whole-number variables: lastRow for the last data row, and r for the row the loop is on.'),
+          part(
+            '    lastRow = Cells(Rows.Count, 1).End(xlUp).Row',
+            `Starts at the bottom of column \`A\` and jumps up to the last filled cell, as {jumpUp} does: row ${last} on this list.`,
+            `A${last}`,
+          ),
+        ],
+      },
+      {
+        do: 'Under them, type this line.',
+        formula: [
+          part(
+            '    Range("A2:F" & lastRow).Interior.ColorIndex = xlNone',
+            `Clears any fill from the data rows first (\`A2:F${last}\` here), so a row that’s been restocked loses its color the next time the macro runs.`,
+            `A2:F${last}`,
+          ),
+        ],
+      },
+      {
+        do: 'Under that, type the loop.',
+        formula: [
+          part('    For r = 2 To lastRow\n', `Repeats the lines down to \`Next r\` once per data row: r is 2, then 3, and so on to ${last}. Starting at 2 skips the header row.`, `A2:A${last}`),
+          raw('        If '),
+          part('Cells(r, 4).Value', 'On hand on row r. Column 4 is `D`.', `D2:D${last}`),
+          part(' < ', 'Is less than. Use `<`, not `<=`: a row exactly at its reorder point isn’t below it.'),
+          part('Cells(r, 5).Value', 'Reorder point on row r. Column 5 is `E`.', `E2:E${last}`),
+          raw(' Then\n'),
+          part('            Range(Cells(r, 1), Cells(r, 6)).Interior.Color = RGB(255, 199, 206)\n', 'Fills columns 1 to 6 (`A` to `F`) of row r. `RGB(255, 199, 206)` is a light red; any color works.'),
+          raw('        End If\n'),
+          part('    Next r', 'Goes back to `For` with the next row, until r passes lastRow.'),
+        ],
+        why: 'The indents are optional; they show which lines sit inside the loop. Conditional formatting would color the rows without changing their own fill, and the coach checks the fill, so the macro sets it with `Interior.Color`.',
+      },
+      {
+        do: 'Switch back to the workbook and click any cell on the practice sheet. Choose **{runMacro}**, select **HighlightReorders** and click **Run**.',
+        why: `The ${low.length} low rows turn light red, down to row ${last} at the bottom. If row ${atRow} fills too, the comparison is \`<=\`: change it to \`<\` and run the macro again. If Excel stops with an error, the editor highlights the line it stopped on; compare it with the cards.`,
+        done: whenPasses(checks, 'filled', `A${last}:F${last}`),
+      },
+      checkStep(
+        `The coach checks that each low row is filled across \`A\` to \`F\`, and that the header row and a sample of the other rows, row ${atRow} among them, aren’t. On the next rep, run HighlightReorders on the new list.`,
+      ),
+    ];
+  },
   make: stockList,
   layout: (d) => ({
     blocks: [cells('A1', [[...STOCK_HEADERS]], 'input'), cells('A2', stockGrid(d.rows), 'input')],

@@ -1,10 +1,11 @@
 import { cellAddress, numberToCol, parseCell, parseRange, rangeAddress, rangeSize, stripSheet } from '../engine/address';
 import { gradeBugHunt, type BugHuntRun } from '../engine/bughunt';
+import { WAITING, cellInRange, parseSpot, probeAnswer, type StepProbe } from '../engine/guide';
 import type { RangeRead } from '../engine/fix';
 import { isFormula } from '../engine/formula';
 import { gradeCellCheck, gradeQueryRows, gradeRules, gradeStructure, gradeValues, gradeVariant, type AnswerRead } from '../engine/grade';
 import { Rng } from '../engine/rng';
-import type { AnswerArea, Block, Cell, CellMark, CheckItem, CheckReport, Exercise, ExpectedGrid, Grid, InputWrite, Inspection, Layout } from '../engine/types';
+import type { AnswerArea, Block, Cell, CellMark, CheckItem, CheckReport, Exercise, ExpectedGrid, Grid, InputWrite, Inspection, Layout, SheetSpot, StepDone } from '../engine/types';
 import type { SheetFormulas } from '../engine/scan';
 import { CoachError } from './errors';
 import { FIX_PREFIX, SHEET_PREFIX, fixSheetNameFor, type CoachHost } from './host';
@@ -998,12 +999,64 @@ export class ExcelHost implements CoachHost {
     });
   }
 
-  async select(sheet: string, address: string): Promise<void> {
+  async select(sheet: string, spot: SheetSpot): Promise<void> {
     await Excel.run(async (ctx) => {
       const ws = ctx.workbook.worksheets.getItem(sheet);
       ws.activate();
-      ws.getRange(address).select();
+      const target = parseSpot(spot);
+      if (target.kind === 'range') {
+        if (target.areas > 1) ws.getRanges(target.address).select();
+        else ws.getRange(target.address).select();
+      } else {
+        const table = ctx.workbook.tables.getItem(target.table);
+        const range =
+          target.kind === 'column'
+            ? table.columns.getItem(target.column).getDataBodyRange()
+            : target.part === 'all'
+              ? table.getRange()
+              : target.part === 'headers'
+                ? table.getHeaderRowRange()
+                : table.getDataBodyRange();
+        range.worksheet.activate();
+        range.select();
+      }
       await ctx.sync();
+    });
+  }
+
+  async probe(ex: Exercise<any>, data: unknown, sheetName: string, done: StepDone): Promise<StepProbe> {
+    if (done.kind === 'check') return WAITING;
+    return Excel.run(async (ctx) => {
+      const ws = ctx.workbook.worksheets.getItemOrNullObject(sheetName);
+      ws.load('name');
+      await ctx.sync();
+      if (ws.isNullObject) return WAITING;
+      if (done.kind === 'select') {
+        const cell = ctx.workbook.getActiveCell();
+        cell.load('address');
+        const active = ctx.workbook.worksheets.getActiveWorksheet();
+        active.load('name');
+        await ctx.sync();
+        return { done: active.name === ws.name && cellInRange(stripSheet(cell.address), done.range) };
+      }
+      if (done.kind === 'tableAt') {
+        const tables = ws.tables;
+        tables.load('items/name');
+        await ctx.sync();
+        const ranges = tables.items.map((t) => t.getRange());
+        ranges.forEach((r) => r.load('address'));
+        await ctx.sync();
+        return { done: ranges.some((r) => cellAddress(parseRange(r.address).start) === done.at) };
+      }
+      if (done.kind === 'inspect') {
+        const result = await this.inspect(ctx, ws, done.inspection, 0);
+        return { done: result.items.length > 0 && result.items.every((i) => i.status !== 'fail') };
+      }
+      const area = ex.layout(data).answer;
+      if (area.kind !== 'cells' && area.kind !== 'spill' && area.kind !== 'tableColumn') return WAITING;
+      const expected = ex.expected(data);
+      const read = await this.readAnswer(ctx, ws, area, expected);
+      return 'missing' in read ? WAITING : probeAnswer(area, expected, read, done.cells);
     });
   }
 }

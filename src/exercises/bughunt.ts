@@ -2,8 +2,9 @@ import { cellAddress, parseCell, parseRange } from '../engine/address';
 import { cellMatches, isErrorValue } from '../engine/compare';
 import { CATEGORIES, DEPARTMENTS, ITEMS, REGIONS, REPS, excelTextCompare, serial, sum, type ItemDef } from '../engine/data';
 import { Rng, round } from '../engine/rng';
-import type { Block, Cell, ColumnSpec, Concept, Exercise, Grid, InputWrite, Layout, PlantedBug, Variant } from '../engine/types';
+import type { Block, Cell, ColumnSpec, Concept, Exercise, FormulaPart, Grid, GuideStep, InputWrite, Layout, PlantedBug, SheetPointer, Variant } from '../engine/types';
 import { FMT, cells, column, dataBlock, defineExercise, rangeWrite, tableWrite } from './common';
+import { cellList, checkStep, money, part, raw } from './guides';
 
 /**
  * Bug hunts. The coach writes a finished-looking report that "an AI assistant built", with five or
@@ -488,6 +489,8 @@ interface HuntSpec<D extends HuntData> {
   data(rng: Rng): D;
   inputs(d: D): InputWrite[];
   variants: Variant<D>[];
+  /** The hunt's own parts of the walkthrough. */
+  tour(d: D): HuntTour;
 }
 
 function huntLayout<D extends HuntData>(report: Report<D>, d: D): Layout {
@@ -531,7 +534,277 @@ function bugHunt<D extends HuntData>(spec: HuntSpec<D>): Exercise<D> {
     expected: (d) => reportValues(report, d, []),
     inputs: spec.inputs,
     variants,
+    guide: (d) => huntGuide(spec, d),
   });
+}
+
+// =====================================================================================
+// Walkthrough: a method first, then one step per planted mistake
+// =====================================================================================
+
+/** The parts of a walkthrough that belong to one hunt. Wording follows the hunt's task and hints. */
+interface HuntTour {
+  /** The opening step: the report, the Tables it reads and its inputs. */
+  meet: GuideStep;
+  /** Reading a run of cells filled from one formula, and what a green triangle does and doesn't mean. */
+  compare: GuideStep;
+  /** What each suspect should trace back to; finishes the Trace Precedents step. */
+  trace: string;
+  /** Changing an input to see which results follow it, then putting it back. */
+  input: GuideStep;
+}
+
+const wholeDollars = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 0, maximumFractionDigits: 0 });
+
+/** A report value as its cell shows it, for the report's number formats. Errors read as Excel shows them. */
+function shown(v: Cell, format: string): string {
+  if (typeof v !== 'number') return v === '' || v === null ? 'nothing' : String(v);
+  if (format.includes('%')) return `${(v * 100).toFixed(1)}%`;
+  if (format.startsWith('$')) return format.includes('.00') ? money(v) : wholeDollars.format(v);
+  return Math.round(v).toLocaleString('en-US');
+}
+
+/** Cells as a spot to select, with each column's runs merged: R4, R5, R7 and S2 give "R4:R5,R7,S2". */
+function spotOf(addresses: string[]): string {
+  const byColumn = new Map<string, number[]>();
+  for (const a of addresses) {
+    const letter = a.replace(/\d+$/, '');
+    byColumn.set(letter, [...(byColumn.get(letter) ?? []), parseCell(a).row]);
+  }
+  return [...byColumn]
+    .sort(([a], [b]) => a.length - b.length || a.localeCompare(b))
+    .map(([letter, rows]) => cellList(letter, rows))
+    .join(',');
+}
+
+/** Cells stacked in one column, as runs: where a fix is typed once and filled down. */
+function columnRuns(addresses: string[]): string[][] {
+  const sorted = [...addresses].sort((a, b) => parseCell(a).col - parseCell(b).col || parseCell(a).row - parseCell(b).row);
+  const runs: string[][] = [];
+  for (const a of sorted) {
+    const run = runs.at(-1);
+    const prev = run && parseCell(run[run.length - 1]);
+    const cell = parseCell(a);
+    if (run && prev && prev.col === cell.col && prev.row + 1 === cell.row) run.push(a);
+    else runs.push([a]);
+  }
+  return runs;
+}
+
+/** The formula a bug step reads: where, as planted, and as it should be (no leading "="). */
+interface BugRead {
+  at: string;
+  buggy: string;
+  fixed: string;
+}
+
+/** A reference locked both ways, like $K$10. */
+const lockedRef = (text: string) => /\$[A-Z]+\$\d+/.exec(text)?.[0];
+/** A reference locked by row only, like P$7. */
+const rowLockedRef = (text: string) => /(?<![$A-Z])[A-Z]+\$\d+/.exec(text)?.[0];
+
+/**
+ * For each kind of mistake: the tell that gives it away, and why it's wrong. The slot's label says
+ * where it is and what it did, so these stay general.
+ */
+const TELLS: Record<string, (b: BugRead) => { tell: string; why: string }> = {
+  'typed-input': () => ({
+    tell: 'The tell: a number typed into the formula where its neighbors point at a cell.',
+    why: 'The number is a copy of today’s input, so the result looks right. When the input changes, this cell stays on the old value.',
+  }),
+  'fill-drift': (b) => {
+    const locked = lockedRef(b.fixed);
+    return {
+      tell: 'The tell: going down the rows, the reference to the input moves down a row each time, when every row should read the same cell.',
+      why: `The first formula pointed at the input without \`$\` signs, so filling it down slid the reference along. \`$\` signs lock a reference in place${locked ? `, as in \`${locked}\`` : ''}.`,
+    };
+  },
+  'approx-lookup': () => ({
+    tell: 'The tell: `VLOOKUP` with `TRUE` as its last argument.',
+    why: 'TRUE asks for an approximate match, which assumes the list is sorted A to Z. This list isn’t, so the lookup can land on another row, and re-sorting the list changes the answer.',
+  }),
+  'sign-flip': () => ({
+    tell: 'The tell: read the heading, then check which value the formula subtracts from which.',
+    why: 'Swapped, the result has the right size but the wrong sign, so over shows as under and under as over.',
+  }),
+  'wrong-criteria': () => ({
+    tell: 'The tell: SUMIFS and COUNTIFS take their conditions (criteria) in pairs, a column to test and then what to look for in it. Here what it looks for doesn’t belong in the column it tests.',
+    why: 'So the formula counts or adds up the wrong rows, and the result still looks like a real number.',
+  }),
+  'off-by-one': (b) => {
+    const own = parseCell(b.at).row;
+    const wrong = [...b.buggy.matchAll(/\$([A-Z]+)(\d+)/g)].find((m) => Number(m[2]) !== own);
+    return {
+      tell: wrong
+        ? `The tell: on row ${own} it reads the label in \`${wrong[0]}\` instead of \`$${wrong[1]}${own}\`.`
+        : `The tell: it reads a label from another row instead of its own, row ${own}.`,
+      why: 'So it shows another row’s number, which looks believable because it’s a real number from the same report.',
+    };
+  },
+  'short-range': (b) => {
+    const range = /\$[A-Z]+\$2:\$[A-Z]+\$(\d+)/.exec(b.buggy);
+    const named = /\b[A-Za-z]+\[[^\]]+\]/.exec(b.fixed)?.[0];
+    return {
+      tell: range
+        ? `The tell: a fixed range, \`${range[0]}\`, where its neighbors name the Table’s columns${named ? `, like \`${named}\`` : ''}.`
+        : 'The tell: a fixed cell range where its neighbors name the Table’s columns.',
+      why: `${range ? `That range stops at row ${range[1]}, where last month’s data ended` : 'A fixed range stops where last month’s data ended'}, so it misses every row below it. A Table column named in the formula covers every row, including ones added later.`,
+    };
+  },
+  'short-total': () => ({
+    tell: 'The tell: the total’s range stops before the last row it should add.',
+    why: 'So that row is left out of the total, and everything that reads the total is off too.',
+  }),
+  'average-total': () => ({
+    tell: 'The tell: the average’s range takes in a total row.',
+    why: 'A total row repeats amounts that are already in the rows above it, so the average counts them twice.',
+  }),
+  'share-drift': (b) => {
+    const locked = rowLockedRef(b.fixed);
+    return {
+      tell: 'The tell: going down the rows, the total each share divides by moves down a row each time.',
+      why: `The first formula divided by the total without a \`$\` before its row number, so filling it down slid the total along.${locked ? ` \`${locked}\` keeps every row on the total.` : ''}`,
+    };
+  },
+  'double-count': () => ({
+    tell: 'The tell: the total’s range takes in the subtotals as well as the rows they add up.',
+    why: 'So those amounts are counted twice.',
+  }),
+};
+
+/** What the changed piece of each kind's fix does, for the fix's formula card. */
+const CHANGES: Record<string, string> = {
+  'typed-input': 'Reads the input from its cell instead of a typed copy of it.',
+  'fill-drift': 'Locked with `$` signs, so every filled row reads the same cell.',
+  'approx-lookup': 'An exact-match lookup. VLOOKUP with FALSE as its last argument works too.',
+  'sign-flip': 'The two values in the right order.',
+  'wrong-criteria': 'Each condition tests the column its value belongs in.',
+  'off-by-one': 'The label on this formula’s own row.',
+  'short-range': 'The Table’s columns by name, so every row counts, including new ones.',
+  'short-total': 'Every row the total should add.',
+  'average-total': 'The rows being averaged, with no total row among them.',
+  'share-drift': 'The `$` before the row number keeps every row on the total.',
+  'double-count': 'The subtotals alone, so each amount counts once.',
+};
+
+/** Characters that end a reference or a function call's name while widening a change to whole pieces. */
+const PIECE_END = new Set(['(', ')', ',', '*', '/', '+', '-', '=']);
+
+/**
+ * The fixed formula as card parts, with the piece that differs from the buggy one picked out and
+ * explained (no leading "=" in either). When most of the formula changes, the whole formula is the piece.
+ */
+function fixParts(buggy: string, fixed: string, change: string): FormulaPart[] {
+  let start = 0;
+  while (start < buggy.length && start < fixed.length && buggy[start] === fixed[start]) start++;
+  let same = 0;
+  while (same < buggy.length - start && same < fixed.length - start && buggy[buggy.length - 1 - same] === fixed[fixed.length - 1 - same]) same++;
+  let end = fixed.length - same;
+  let buggyEnd = buggy.length - same;
+  // Widen to whole references and calls, the same distance in both (the ends they share are identical).
+  while (start > 0 && !PIECE_END.has(fixed[start - 1])) start--;
+  while (end < fixed.length && !PIECE_END.has(fixed[end])) {
+    end++;
+    buggyEnd++;
+  }
+  const open = (t: string) => (t.match(/\(/g)?.length ?? 0) - (t.match(/\)/g)?.length ?? 0);
+  while (open(fixed.slice(start, end)) > 0 && fixed[end] === ')') {
+    end++;
+    buggyEnd++;
+  }
+  const piece = fixed.slice(start, end);
+  const was = buggy.slice(start, buggyEnd);
+  const unlocked = piece.replace(/\$/g, '');
+  const at = /^[A-Z]+\d+(:[A-Z]+\d+)?(,[A-Z]+\d+(:[A-Z]+\d+)?)*$/.test(unlocked) ? unlocked : /^[A-Za-z]+\[[^\]]+\]$/.test(piece) ? piece : undefined;
+  if (!piece || piece.length > 0.6 * fixed.length) return [part(`=${fixed}`, change)];
+  return [raw(`=${fixed.slice(0, start)}`), part(piece, `${change} The broken formula had \`${was}\` here.`, at), ...(end < fixed.length ? [raw(fixed.slice(end))] : [])];
+}
+
+/** "a, b, and c". */
+const listOf = (items: string[]) => (items.length > 1 ? `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}` : (items[0] ?? ''));
+
+function huntGuide<D extends HuntData>(spec: HuntSpec<D>, d: D): GuideStep[] {
+  const { report } = spec;
+  const tour = spec.tour(d);
+  const slots = d.bugs.map((p) => slotOf(report, d, p));
+  const footprints = bugCells(report, d);
+  const planted = formulaMap(report, d, slots);
+  const correct = formulaMap(report, d, []);
+  const grid = rangeCells(report.range);
+  const valuesWith = (plants: readonly Plant[]) => {
+    const values = reportValues(report, d, plants);
+    return new Map(grid.flatMap((row, r) => row.map((a, c) => [a, values[r][c]] as const)));
+  };
+  const now = valuesWith(d.bugs);
+  const right = valuesWith([]);
+  const origin = parseRange(report.range).start;
+  const formatOf = (a: string) => report.formats[parseCell(a).col - origin.col];
+  const touched = new Set(footprints.flat());
+  const top = cellAddress(origin);
+  // A cell no mistake touches, so the first formula the learner reads is a right one.
+  const sample = grid.flat().find((a) => a !== top && !touched.has(a)) ?? top;
+
+  const bugSteps = d.bugs.map((p, i): GuideStep => {
+    const slot = slots[i];
+    const replaced = Object.keys(slot.formulas).map(bare).sort(byPosition);
+    // A slid reference is right in the first cell, so read the second.
+    const drift = (p.kind === 'fill-drift' || p.kind === 'share-drift') && replaced.length > 1;
+    const at = drift ? replaced[1] : replaced[0];
+    const read: BugRead = { at, buggy: planted.get(at)!.text, fixed: correct.get(at)!.text };
+    const notes = TELLS[p.kind]?.(read) ?? { tell: '', why: '' };
+    const differs = (a: string) => !cellMatches(now.get(a)!, right.get(a)!);
+    const off = differs(at) ? at : footprints[i].find(differs);
+    const symptom = off
+      ? `Right now \`${off}\` shows ${shown(now.get(off)!, formatOf(off))}; fixed, it shows ${shown(right.get(off)!, formatOf(off))}.`
+      : 'Right now it shows the right number, so the results won’t give it away. The formula does.';
+    // The card shows the fix for the first cell to type; any other run gets its formula in words.
+    const runs = columnRuns(replaced);
+    const typeAt = runs[0][0];
+    const fix = runs
+      .map((run, r) => {
+        const first = run[0];
+        const type = r === 0 ? `type the formula above in \`${first}\` and press {enter}` : `type \`=${correct.get(first)!.text}\` in \`${first}\` and press {enter}`;
+        return run.length > 1 ? `${type}, then select \`${first}:${run[run.length - 1]}\` and press {fillDown}` : type;
+      })
+      .join('. Then ');
+    const show: SheetPointer[] = [{ label: replaced.length > 1 ? 'The cells with the mistake' : 'The cell with the mistake', at: spotOf(replaced) }];
+    if (footprints[i].length > replaced.length) {
+      show.push({
+        label: 'Cells it throws off',
+        at: spotOf(footprints[i]),
+        note: 'Every one of these depends on the mistake, so each is wrong now or will be once the data changes. Fixing the mistake puts them all right.',
+      });
+    }
+    return {
+      do: `Mistake ${i + 1} of ${d.bugs.length}: click \`${at}\` and read its formula. The fix is below.`,
+      formula: fixParts(planted.get(typeAt)!.text, correct.get(typeAt)!.text, CHANGES[p.kind] ?? 'The fix.'),
+      why: [`It reads \`=${read.buggy}\`.`, `${slot.label}.`, notes.tell, notes.why, symptom, `**Fix:** ${fix}.`].filter(Boolean).join(' '),
+      show,
+    };
+  });
+
+  return [
+    tour.meet,
+    {
+      do: `Click \`${sample}\` and read its formula in the formula bar, the long box above the column letters.`,
+      why: `The cell shows a result; the formula bar shows how it’s worked out. \`${sample}\` reads \`=${planted.get(sample)!.text}\`, and that one is right. A wrong formula can still show a believable number, so this hunt is about reading formulas, not checking results.`,
+      done: { kind: 'select', range: sample },
+    },
+    {
+      do: 'Turn on **Formulas › Show Formulas**.',
+      why: 'Every cell now shows its formula instead of its result, so you can read the whole report at once. Choose it again whenever you want the results back.',
+    },
+    tour.compare,
+    {
+      do: 'Click a formula you want to check, then choose **Formulas › Trace Precedents**.',
+      why: `Blue arrows run to the formula from every cell it reads. ${tour.trace} Choose **Formulas › Remove Arrows** to clear them.`,
+    },
+    tour.input,
+    ...bugSteps,
+    checkStep(
+      `The coach checks every cell in \`${report.range}\` on the current data, then again when ${listOf(spec.variants.map((v) => v.label))}. It puts the original data back afterwards. Turn off **Formulas › Show Formulas** to see the results again.`,
+    ),
+  ];
 }
 
 /** "Write =X in R4." or "Write =X in R4 and fill down to R6." */
@@ -931,6 +1204,32 @@ export const bughuntInventory = bugHunt<RO>({
   data: reorderData,
   inputs: (d) => [tableWrite('Stock', STOCK_COLS, stockGrid(d.stock)), rangeWrite('K10', [[d.fee]]), tableWrite('Freight', FREIGHT_COLS, freightGrid(d.freight))],
   variants: reorderVariants,
+  tour: (d) => ({
+    meet: {
+      do: `Meet the report. An AI assistant built this reorder report in \`K2:S8\` from last month’s template, and it has ${d.bugs.length} mistakes.`,
+      why: 'Each row is a category from column `J`; the last two rows are the Total and the Average per category. The formulas read the **Stock** Table, the handling fee in `K10` and the **Freight** list. Fix the report’s formulas only, not the data or the inputs.',
+      show: [
+        { label: 'The report', at: RO_RANGE },
+        { label: 'Stock Table', at: 'Stock[#All]', note: 'One row per SKU. The report adds it up by category.' },
+        { label: 'Handling fee', at: 'K10', note: `${money(d.fee)} per unit ordered.` },
+        { label: 'Freight list', at: 'Freight[#All]', note: 'A freight rate for each category. It isn’t sorted.' },
+      ],
+    },
+    compare: {
+      do: 'Read down `L2:L6`, the On hand formulas for the five categories.',
+      why: 'Each column repeats one formula down the category rows; only the row number in `$J2`, `$J3`… changes. A formula that reads differently from its neighbors is a suspect. Many suspects carry a green error triangle in the cell’s top-left corner. A triangle is a clue, not a verdict: the Average row may show one because it leaves out the Total row, and that’s correct.',
+      show: [{ label: 'On hand, rows 2 to 6', at: 'L2:L6' }],
+    },
+    trace: 'Every Handling cell should point at the fee in `K10`, every Freight cell at the Freight list with an exact match, every Share cell at the total in `P7`, and every row at its own category in column `J`.',
+    input: {
+      do: `Type \`1\` in \`K10\`, the handling fee, and watch the Handling column, \`R\`. Then type \`${d.fee}\` back in \`K10\`.`,
+      why: 'Every Handling cell multiplies units by the fee, so each one should change. One that stays put has the fee typed into its formula. The same test works on the Freight list’s rates and the Freight column, `Q`.',
+      show: [
+        { label: 'Handling fee', at: 'K10' },
+        { label: 'Handling column', at: 'R2:R6' },
+      ],
+    },
+  }),
 });
 
 // =====================================================================================
@@ -1272,6 +1571,35 @@ export const bughuntBudget = bugHunt<PL>({
   data: budgetData,
   inputs: (d) => [tableWrite('Ledger', LEDGER_COLS, ledgerGrid(d.ledger)), tableWrite('Budget', BUDGET_COLS, budgetGrid(d.budget)), rangeWrite('J1', [[d.rate]])],
   variants: budgetVariants,
+  tour: (d) => {
+    const rate = `${Number((d.rate * 100).toFixed(2))}%`;
+    return {
+      meet: {
+        do: `Meet the report. An AI assistant built this Q3 budget vs actual report in \`J4:P14\` from last month’s template, and it has ${d.bugs.length} mistakes.`,
+        why: 'Each column is a department, named in row `3`; each row is a line of the P&L, named in column `I`. The formulas read the **Ledger** Table, the **Budget** list and the payroll tax rate in `J1`. Fix the report’s formulas only, not the data or the rate.',
+        show: [
+          { label: 'The report', at: PL_RANGE },
+          { label: 'Ledger Table', at: 'Ledger[#All]', note: 'Every posting for the quarter, by department and account.' },
+          { label: 'Budget list', at: 'Budget[#All]', note: 'Each department’s Q3 budget. It isn’t sorted.' },
+          { label: 'Payroll tax rate', at: 'J1', note: `${rate} of salaries and wages.` },
+        ],
+      },
+      compare: {
+        do: 'Read across `J4:P4`, the Salaries and wages formulas for each department.',
+        why: 'Each row repeats one formula across the departments; only the column letter in `J$3`, `K$3`… changes. A formula that reads differently from its neighbors is a suspect. Many suspects carry a green error triangle in the cell’s top-left corner. A triangle is a clue, not a verdict: some mistakes don’t get one, and a correct total can.',
+        show: [{ label: 'Salaries and wages', at: 'J4:P4' }],
+      },
+      trace: 'Payroll taxes should point at the rate in `J1`, Total expenses should add only the two subtotals, Budget should look up its department with an exact match, and each account row should read its own label in column `I` and its department in row `3`.',
+      input: {
+        do: `Type \`10%\` in \`J1\`, the payroll tax rate, and watch the Payroll taxes row, \`5\`. Then type \`${rate}\` back in \`J1\`.`,
+        why: 'Every Payroll taxes cell multiplies salaries by the rate, so each one should change. One that stays put has the rate typed into its formula. The same test works on the Budget list and the Over (under) budget row, `14`.',
+        show: [
+          { label: 'Payroll tax rate', at: 'J1' },
+          { label: 'Payroll taxes row', at: 'J5:P5' },
+        ],
+      },
+    };
+  },
 });
 
 // =====================================================================================
@@ -1636,6 +1964,35 @@ export const bughuntCommission = bugHunt<CM>({
   data: commissionData,
   inputs: (d) => [tableWrite('Sales', SALES_COLS, dealGrid(d.deals)), rangeWrite('H13', [[d.rate]]), tableWrite('Quotas', QUOTA_COLS, quotaGrid(d.quotas))],
   variants: commissionVariants,
+  tour: (d) => {
+    const rate = `${Number((d.rate * 100).toFixed(1))}%`;
+    return {
+      meet: {
+        do: `Meet the report. An AI assistant built this quarter’s commission summary in \`H2:O11\` from last month’s template, and it has ${d.bugs.length} mistakes.`,
+        why: `Rows \`2\` to \`4\` are the ${d.regions[0]} reps and row \`5\` is their total; rows \`6\` to \`9\` do the same for ${d.regions[1]}. Row \`10\` is the Total and row \`11\` the Average per rep. The formulas read the **Sales** Table, the commission rate in \`H13\` and the **Quotas** list. Fix the report’s formulas only, not the data or the rate.`,
+        show: [
+          { label: 'The report', at: CM_RANGE },
+          { label: 'Sales Table', at: 'Sales[#All]', note: 'Every deal this quarter, one row each.' },
+          { label: 'Commission rate', at: 'H13', note: `${rate} of each rep’s sales.` },
+          { label: 'Quotas list', at: 'Quotas[#All]', note: 'Each rep’s quota. It isn’t sorted.' },
+        ],
+      },
+      compare: {
+        do: 'Read down `I2:I4`, the Sales formulas for the first three reps.',
+        why: 'Each column repeats one formula down the rep rows; only the row number in `$G2`, `$G3`… changes. The subtotal, Total and Average rows should read alike across the columns too. A formula that breaks the pattern is a suspect. Many suspects carry a green error triangle in the cell’s top-left corner. A triangle is a clue, not a verdict: the Average row may show one because it leaves out the subtotal and Total rows, and that’s correct.',
+        show: [{ label: 'Sales, rows 2 to 4', at: 'I2:I4' }],
+      },
+      trace: 'Commission should point at the rate in `H13`, Quota should look up its rep with an exact match, every Share cell should divide by the total in `I10`, and every rep row should read its own name in column `G`.',
+      input: {
+        do: `Type \`10%\` in \`H13\`, the commission rate, and watch the Commission column, \`N\`. Then type \`${rate}\` back in \`H13\`.`,
+        why: 'Every Commission cell multiplies a rep’s sales by the rate, so each one should change. One that stays put has the rate typed into its formula. The same test works on the Quotas list and the Over (under) quota column, `M`.',
+        show: [
+          { label: 'Commission rate', at: 'H13' },
+          { label: 'Commission column', at: 'N2:N4,N6:N8' },
+        ],
+      },
+    };
+  },
 });
 
 // =====================================================================================

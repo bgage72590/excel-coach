@@ -35,6 +35,10 @@ interface Keys {
   personalProject: string;
   /** Fill Right: copies a formula across without sliding Table column names, unlike dragging. */
   fillRight: string;
+  /** Fill Down: copies the top cell's formula into the selected cells below it. */
+  fillDown: string;
+  /** The ribbon tab that appears when a cell in a Table is selected. */
+  tableTab: string;
 }
 
 const NO_VBA = 'Excel on a Mac or Windows PC (Excel for the web can’t run VBA)';
@@ -52,6 +56,8 @@ const KEYS: Record<Platform, Keys> = {
     jumpUp: '⌘↑',
     personalProject: 'your Personal Macro Workbook’s project',
     fillRight: '⌘R',
+    fillDown: '⌘D',
+    tableTab: 'Table',
   },
   windows: {
     tableKey: 'Ctrl+T',
@@ -65,6 +71,8 @@ const KEYS: Record<Platform, Keys> = {
     jumpUp: 'Ctrl+↑',
     personalProject: 'VBAProject (PERSONAL.XLSB)',
     fillRight: 'Ctrl+R',
+    fillDown: 'Ctrl+D',
+    tableTab: 'Table Design',
   },
   web: {
     tableKey: 'Ctrl+T',
@@ -78,6 +86,8 @@ const KEYS: Record<Platform, Keys> = {
     jumpUp: 'Ctrl+↑',
     personalProject: NO_VBA,
     fillRight: 'Ctrl+R',
+    fillDown: 'Ctrl+D',
+    tableTab: 'Table Design',
   },
 };
 
@@ -104,7 +114,7 @@ const MAC_PQ_NOTE =
 
 /**
  * Replaces platform placeholders: {tableKey}, {absKey}, {nameManager}, {enter}, {recordMacro},
- * {runMacro}, {vbaEditor}, {developerTab}, {jumpUp}, {personalProject}, {fillRight}, {fromTable:TableName}, {nameQuery:TableName} and {macPqNote} (the last two
+ * {runMacro}, {vbaEditor}, {developerTab}, {jumpUp}, {personalProject}, {fillRight}, {fillDown}, {tableTab}, {fromTable:TableName}, {nameQuery:TableName} and {macPqNote} (the last two
  * are empty outside Excel for Mac).
  */
 export function localize(text: string, platform: Platform): string {
@@ -113,5 +123,5 @@ export function localize(text: string, platform: Platform): string {
     .replace(/\{fromTable:([^}]+)\}/g, (_, table: string) => fromTable(table, platform))
     .replace(/\{nameQuery:([^}]+)\}/g, (_, table: string) => nameQuery(table, platform))
     .replace(/\s?\{macPqNote\}/g, platform === 'mac' ? ` ${MAC_PQ_NOTE}` : '')
-    .replace(/\{(tableKey|absKey|nameManager|enter|recordMacro|runMacro|vbaEditor|developerTab|jumpUp|personalProject|fillRight)\}/g, (_, k: keyof Keys) => keys[k]);
+    .replace(/\{(tableKey|absKey|nameManager|enter|recordMacro|runMacro|vbaEditor|developerTab|jumpUp|personalProject|fillRight|fillDown|tableTab)\}/g, (_, k: keyof Keys) => keys[k]);
 }

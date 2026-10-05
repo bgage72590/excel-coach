@@ -89,7 +89,7 @@ const useRichStyles = makeStyles({
   },
 });
 
-/** Renders `backticked` spans as inline code. */
+/** Renders `backticked` spans as inline code and **starred** spans as bold. */
 export function RichText({ text }: { text: string }) {
   const s = useRichStyles();
   const parts = text.split('`');
@@ -101,7 +101,7 @@ export function RichText({ text }: { text: string }) {
             {part}
           </code>
         ) : (
-          <Fragment key={i}>{part}</Fragment>
+          <Fragment key={i}>{part.split('**').map((run, j) => (j % 2 === 1 ? <strong key={j}>{run}</strong> : <Fragment key={j}>{run}</Fragment>))}</Fragment>
         ),
       )}
     </>

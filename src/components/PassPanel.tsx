@@ -51,17 +51,21 @@ interface Props {
   outcome?: PassOutcome;
   report: CheckReport;
   revealed: boolean;
+  /** The walkthrough was used, so the rep is practice only. */
+  guided?: boolean;
   passes: number;
   mastered: boolean;
 }
 
-export function PassPanel({ outcome, report, revealed, passes, mastered }: Props) {
+export function PassPanel({ outcome, report, revealed, guided, passes, mastered }: Props) {
   const s = useStyles();
   const checks = report.items.filter((i) => i.status === 'pass').length;
 
-  const sub = revealed
-    ? 'The answer was shown, so this rep is practice only.'
-    : outcome?.personalBest && outcome.passesTowardMastery > 1
+  const sub = guided
+    ? 'Walkthrough done. Guided reps are practice; try the next one on your own.'
+    : revealed
+      ? 'The answer was shown, so this rep is practice only.'
+      : outcome?.personalBest && outcome.passesTowardMastery > 1
       ? 'New personal best.'
       : outcome?.clean && (outcome.state.cleanStreak ?? 0) >= 2
         ? `${outcome.state.cleanStreak} clean passes in a row: first try, no hints.`
@@ -90,7 +94,7 @@ export function PassPanel({ outcome, report, revealed, passes, mastered }: Props
       <Divider className={s.divider} />
       <div className={s.mastery}>
         <Caption1>Mastery</Caption1>
-        <MasteryDots passes={passes} fresh={outcome && !revealed ? passes - 1 : -1} />
+        <MasteryDots passes={passes} fresh={outcome && !revealed && !guided ? passes - 1 : -1} />
       </div>
       <Caption1 className={s.caption}>{masteryCaption}</Caption1>
     </section>

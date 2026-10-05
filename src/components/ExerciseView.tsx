@@ -25,6 +25,7 @@ import {
   Eye20Regular,
   Lightbulb20Regular,
   MoreHorizontal20Regular,
+  Steps20Regular,
   Table20Regular,
   Timer16Regular,
 } from '@fluentui/react-icons';
@@ -32,7 +33,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { buildHintPayload, canExplain } from '../ai/hints';
 import { MASTERY_PASSES, formatDuration, progressFor, recordAttempt, recordPass, statusOf, type PassOutcome } from '../engine/progress';
 import { Rng, newSeed } from '../engine/rng';
-import type { CheckReport } from '../engine/types';
+import type { CheckReport, StepDone } from '../engine/types';
 import { CoachError, friendlyError } from '../excel/errors';
 import { sheetNameFor } from '../excel/host';
 import { EXERCISES, MODULES, getExercise } from '../exercises';
@@ -41,6 +42,7 @@ import { MasteryDots, RichText, SectionLabel, useNow } from './bits';
 import { CheckResults } from './CheckResults';
 import { ConceptPanel } from './ConceptPanel';
 import { ConfirmDialog } from './ConfirmDialog';
+import { GuidePanel } from './GuidePanel';
 import { HintPanel, hintKey, useHintsEnabled } from './HintPanel';
 import { PassPanel } from './PassPanel';
 
@@ -127,7 +129,8 @@ export function ExerciseView({ id }: { id: string }) {
   const [report, setReport] = useState<CheckReport>();
   const [outcome, setOutcome] = useState<PassOutcome>();
   const [error, setError] = useState<string>();
-  const [confirm, setConfirm] = useState<'newData' | 'reveal' | null>(null);
+  const [confirm, setConfirm] = useState<'newData' | 'reveal' | 'guide' | null>(null);
+  const [guideHidden, setGuideHidden] = useState(false);
   const [copied, setCopied] = useState(false);
   const hintsOn = useHintsEnabled();
   const outcomeRef = useRef<HTMLDivElement>(null);
@@ -139,6 +142,11 @@ export function ExerciseView({ id }: { id: string }) {
 
   // The rep's data is fully determined by its seed.
   const data = useMemo(() => ex.make(new Rng(session?.seed ?? 1)), [ex, session?.seed]);
+  const guide = useMemo(() => ex.guide?.(data), [ex, data]);
+  const answerAt = useMemo(() => {
+    const a = ex.layout(data).answer;
+    return a.kind === 'cells' ? a.range : a.kind === 'spill' ? a.anchor : a.kind === 'tableColumn' ? `${a.table}[${a.column}]` : 'the sheet';
+  }, [ex, data]);
   const now = useNow(phase === 'working' || phase === 'checking');
   const elapsed = session ? (session.passedAt ?? now) - session.startedAt : 0;
 
@@ -155,12 +163,13 @@ export function ExerciseView({ id }: { id: string }) {
     };
   }, [phase, host, session]);
 
-  const setUp = useCallback(async () => {
+  const setUp = useCallback(async (guided = false) => {
     if (!host) return setError(hostNotice);
     setConfirm(null);
     setError(undefined);
     setReport(undefined);
     setOutcome(undefined);
+    setGuideHidden(false);
     setPhase('settingUp');
     const seed = newSeed();
     const sheet = sheetNameFor(id);
@@ -168,7 +177,7 @@ export function ExerciseView({ id }: { id: string }) {
       await host.setup(ex, ex.make(new Rng(seed)), sheet);
       setProgress((prev) => ({
         ...prev,
-        session: { exerciseId: id, seed, sheet, startedAt: Date.now(), attempts: 0, hintsShown: 0, revealed: false },
+        session: { exerciseId: id, seed, sheet, startedAt: Date.now(), attempts: 0, hintsShown: 0, revealed: false, ...(guided ? { guided: true, guideStep: 0 } : {}) },
       }));
       setPhase('working');
     } catch (e) {
@@ -226,6 +235,22 @@ export function ExerciseView({ id }: { id: string }) {
   const showHint = () =>
     setProgress((prev) => (prev.session ? { ...prev, session: { ...prev.session, hintsShown: Math.min(ex.hints.length, prev.session.hintsShown + 1) } } : prev));
 
+  const openGuide = () => {
+    setConfirm(null);
+    setGuideHidden(false);
+    setProgress((prev) => (prev.session ? { ...prev, session: { ...prev.session, guided: true, guideStep: prev.session.guideStep ?? 0 } } : prev));
+  };
+
+  const setGuideStep = useCallback(
+    (step: number) => setProgress((prev) => (prev.session ? { ...prev, session: { ...prev.session, guideStep: step } } : prev)),
+    [setProgress],
+  );
+
+  const probeStep = useCallback(
+    (done: StepDone) => (host && session ? host.probe(ex, data, session.sheet, done) : Promise.resolve({ done: false })),
+    [host, session, ex, data],
+  );
+
   const reveal = () => {
     setConfirm(null);
     setProgress((prev) => (prev.session ? { ...prev, session: { ...prev.session, revealed: true } } : prev));
@@ -234,11 +259,11 @@ export function ExerciseView({ id }: { id: string }) {
   const requestNewData = () => {
     const invested = session && !session.passedAt && (session.attempts > 0 || Date.now() - session.startedAt > 30_000);
     if (invested && phase !== 'passed') setConfirm('newData');
-    else void setUp();
+    else void setUp(guidedNow);
   };
 
-  const goTo = (address: string) => {
-    if (host && session) host.select(session.sheet, address).catch((e) => setError(friendlyError(e)));
+  const goTo = (spot: string) => {
+    if (host && session) host.select(session.sheet, spot).catch((e) => setError(friendlyError(e)));
   };
 
   const nextRep = () => {
@@ -264,6 +289,11 @@ export function ExerciseView({ id }: { id: string }) {
   };
 
   const passes = Math.min(p.passSeeds.length, MASTERY_PASSES);
+  const guided = session?.guided ?? false;
+  const guidedNow = guided && !session?.passedAt;
+  const showGuide = !!guide && guided && !guideHidden && (phase === 'working' || phase === 'checking');
+  // Until the first pass, the walkthrough is the suggested way in.
+  const preferGuide = !!guide && p.passSeeds.length === 0;
   const hintsShown = session?.hintsShown ?? 0;
   const revealed = session?.revealed ?? false;
   const status = statusOf(p, Date.now());
@@ -329,7 +359,23 @@ export function ExerciseView({ id }: { id: string }) {
           </Body1>
         </section>
 
-        <ConceptPanel concept={concept} defaultOpen={status === 'new' && !session} />
+        {showGuide && session && (
+          <GuidePanel
+            steps={guide!}
+            index={session.guideStep ?? 0}
+            onIndex={setGuideStep}
+            watching={phase === 'working'}
+            passed={false}
+            answerAt={answerAt}
+            probe={probeStep}
+            onShow={goTo}
+            onClose={() => setGuideHidden(true)}
+            localize={localize}
+          />
+        )}
+
+        {/* The walkthrough covers the same ground, so the concept folds away while it's open. */}
+        <ConceptPanel key={showGuide ? 'guided' : 'plain'} concept={concept} defaultOpen={status === 'new' && !session && !showGuide} />
 
         {hintsShown > 0 && (
           <section aria-label="Hints">
@@ -379,25 +425,50 @@ export function ExerciseView({ id }: { id: string }) {
             />
           )}
           {phase === 'passed' && report && (
-            <PassPanel outcome={outcome} report={report} revealed={revealed} passes={Math.min(progressFor(progress, id).passSeeds.length, MASTERY_PASSES)} mastered={p.mastered} />
+            <PassPanel outcome={outcome} report={report} revealed={revealed} guided={guided} passes={Math.min(progressFor(progress, id).passSeeds.length, MASTERY_PASSES)} mastered={p.mastered} />
           )}
         </div>
       </div>
 
       <footer className={s.footer}>
         {phase === 'brief' || phase === 'settingUp' || phase === 'loading' ? (
-          <>
-            <Button
-              appearance="primary"
-              size="large"
-              icon={phase === 'brief' ? <Table20Regular /> : <Spinner size="tiny" />}
-              disabled={busy}
-              onClick={() => void setUp()}
-            >
-              {phase === 'settingUp' ? 'Setting up…' : phase === 'loading' ? 'Opening…' : 'Set up practice sheet'}
-            </Button>
-            <Caption1 className={s.footnote}>Adds a sheet with fresh data and replaces earlier practice sheets.</Caption1>
-          </>
+          guide ? (
+            <>
+              <div className={s.actions}>
+                <Button
+                  className={s.grow}
+                  appearance="primary"
+                  size="large"
+                  icon={phase === 'brief' ? preferGuide ? <Steps20Regular /> : <Table20Regular /> : <Spinner size="tiny" />}
+                  disabled={busy}
+                  onClick={() => void setUp(preferGuide)}
+                >
+                  {phase === 'settingUp' ? 'Setting up…' : phase === 'loading' ? 'Opening…' : preferGuide ? 'Walk me through it' : 'Set up practice sheet'}
+                </Button>
+                <Button size="large" disabled={busy} onClick={() => void setUp(!preferGuide)}>
+                  {preferGuide ? 'On my own' : 'Walk me through it'}
+                </Button>
+              </div>
+              <Caption1 className={s.footnote}>
+                {preferGuide
+                  ? 'The walkthrough sets up a practice sheet and takes you one step at a time. Guided reps don’t count toward mastery.'
+                  : 'Adds a sheet with fresh data and replaces earlier practice sheets.'}
+              </Caption1>
+            </>
+          ) : (
+            <>
+              <Button
+                appearance="primary"
+                size="large"
+                icon={phase === 'brief' ? <Table20Regular /> : <Spinner size="tiny" />}
+                disabled={busy}
+                onClick={() => void setUp()}
+              >
+                {phase === 'settingUp' ? 'Setting up…' : phase === 'loading' ? 'Opening…' : 'Set up practice sheet'}
+              </Button>
+              <Caption1 className={s.footnote}>Adds a sheet with fresh data and replaces earlier practice sheets.</Caption1>
+            </>
+          )
         ) : phase === 'passed' ? (
           <div className={s.actions}>
             {p.mastered ? (
@@ -445,6 +516,11 @@ export function ExerciseView({ id }: { id: string }) {
               </MenuTrigger>
               <MenuPopover>
                 <MenuList>
+                  {guide && !showGuide && (
+                    <MenuItem icon={<Steps20Regular />} onClick={() => (guided ? openGuide() : setConfirm('guide'))}>
+                      Walk me through it
+                    </MenuItem>
+                  )}
                   <MenuItem icon={<ArrowSync20Regular />} onClick={requestNewData}>
                     New data
                   </MenuItem>
@@ -464,7 +540,16 @@ export function ExerciseView({ id }: { id: string }) {
         body="The practice sheet is replaced with a fresh one, and your formulas on it are cleared."
         confirmLabel="Start over"
         onCancel={() => setConfirm(null)}
-        onConfirm={() => void setUp()}
+        onConfirm={() => void setUp(guidedNow)}
+      />
+      <ConfirmDialog
+        open={confirm === 'guide'}
+        title="Walk through this rep?"
+        body="The walkthrough takes you one step at a time on this sheet. This rep won’t count toward mastery; the next one can."
+        confirmLabel="Walk me through it"
+        cancelLabel="Keep going on my own"
+        onCancel={() => setConfirm(null)}
+        onConfirm={openGuide}
       />
       <ConfirmDialog
         open={confirm === 'reveal'}

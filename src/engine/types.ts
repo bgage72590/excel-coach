@@ -251,6 +251,63 @@ export interface Concept {
   tip?: string;
 }
 
+// ---------- guided walkthrough ----------
+
+/**
+ * Where on the practice sheet something lives, for the coach to select: an A1 range ("F2:F49"),
+ * several ranges ("F6,F9,F12"), or a Table reference ("Inventory[Value]", "Inventory[#Data]",
+ * "Inventory[#All]"). Table references follow the Table as it grows.
+ */
+export type SheetSpot = string;
+
+/** One piece of a formula in a walkthrough. A step's parts, joined, spell the whole formula. */
+export interface FormulaPart {
+  text: string;
+  /** Plain words, e.g. "what to add up: the Value column". Omit for punctuation like "," or ")". */
+  means?: string;
+  /** Where it is on the sheet; the learner can tap Show to select it. */
+  at?: SheetSpot;
+}
+
+/** A place the coach can point at by selecting it. */
+export interface SheetPointer {
+  /** Button text, e.g. "Show the Dallas rows". */
+  label: string;
+  at: SheetSpot;
+  /** Shown once selected, e.g. "The status bar's Sum is the number your formula should give." */
+  note?: string;
+}
+
+/** How the coach spots that a walkthrough step is done. Without one, the learner presses Next. */
+export type StepDone =
+  /** The active cell is inside `range` on the practice sheet. */
+  | { kind: 'select'; range: string }
+  /**
+   * Answer cells hold formulas showing the expected values. `cells` (A1, inside a 'cells' answer
+   * area) narrows it to part of the area, e.g. the first cell before filling down. Spill and
+   * tableColumn answers are always judged whole.
+   */
+  | { kind: 'answer'; cells?: string }
+  /** An inspection passes: a Table exists, a PivotTable is laid out, a chart is there. */
+  | { kind: 'inspect'; inspection: Inspection }
+  /** Some Table, whatever its name, starts at `at` on the practice sheet (before the learner renames it). */
+  | { kind: 'tableAt'; at: string }
+  /** The check passes. The last step. */
+  | { kind: 'check' };
+
+/** One small action in a walkthrough. */
+export interface GuideStep {
+  /** The action, e.g. "Click `I2` and type this formula, then press {enter}." Placeholders allowed. */
+  do: string;
+  /** Why it works, or what to expect on screen. */
+  why?: string;
+  /** The formula to type in this step, part by part. */
+  formula?: FormulaPart[];
+  /** Places to point at: each becomes a Show button. */
+  show?: SheetPointer[];
+  done?: StepDone;
+}
+
 export interface Exercise<D = unknown> {
   id: string;
   module: ModuleId;
@@ -277,6 +334,8 @@ export interface Exercise<D = unknown> {
   inspections?(d: D): Inspection[];
   /** Workbook names this exercise creates; removed when a fresh sheet is set up. */
   ownsNames?: string[];
+  /** A step-by-step walkthrough for learning the skill. A guided rep doesn't count toward mastery. */
+  guide?(d: D): GuideStep[];
 }
 
 /** A concrete rep: an exercise plus the data generated from a seed. */
